@@ -1,0 +1,2 @@
+2025-01-07 14:13:59,748 - app - INFO - 初始化完成，上传目录：firmware
+2025-01-07 14:13:59,845 - app - INFO - 文件拷贝成功：C:/Users/Jimmy.Cui/Downloads/IMAGE_P3S_4.4.1(12)_RPC.img -> firmware\2025-01-07 14:14:32,257 - __main__ - INFO - 启动Web服务
