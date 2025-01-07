@@ -156,15 +156,15 @@ class DeviceManager:
             logger.debug(f"设备无法连接：{ip} - {str(e)}")
             return False
             
-    def connect(self, ip: str) -> str:
+    def connect(self, ip: str) -> dict:
         """
-        通过TELNET连接设备
+        通过TELNET连接设备并获取版本信息
         
         参数：
             ip: 目标设备IP地址
             
         返回：
-            str: 连接结果信息
+            dict: 包含连接结果和版本信息的字典
         """
         logger.info(f"尝试连接设备：{ip}")
         try:
@@ -172,7 +172,7 @@ class DeviceManager:
             try:
                 socket.inet_aton(ip)
             except socket.error:
-                return f"IP地址格式错误：{ip}"
+                return {"status": "error", "message": f"IP地址格式错误：{ip}"}
                 
             # 尝试连接
             tn = telnetlib.Telnet(ip, timeout=5)
@@ -187,18 +187,47 @@ class DeviceManager:
             index, _, _ = tn.expect([b"Login incorrect", b"#"], timeout=5)
             if index == 0:
                 tn.close()
-                return f"设备认证失败：{ip}（用户名或密码错误）"
-                
+                return {"status": "error", "message": f"设备认证失败：{ip}（用户名或密码错误）"}
+
+            # 执行获取版本命令
+            tn.write(b"cat /data/etc/version\n")
+            # 等待命令执行完成并读取输出
+            response = tn.read_until(b"#", timeout=5).decode('utf-8')
+            print("命令输出原始内容：")
+            print("="*50)
+            print(response)
+            print("="*50)
+            logger.debug(f"版本命令输出：{response}")  # 添加日志以便调试
+            
+            # 解析版本信息
+            version = "未知"
+            print("\n逐行解析内容：")
+            print("-"*50)
+            for line in response.split('\n'):
+                line = line.strip()
+                print(f"当前解析行: [{line}]")
+                logger.debug(f"解析行：{line}")  # 添加日志以便调试
+                if "VERSION" in line:
+                    try:
+                        version = line.split('=')[1].strip()
+                        print(f"找到版本行，解析结果: {version}")
+                        logger.info(f"成功解析到版本号：{version}")
+                    except IndexError:
+                        print(f"版本行格式解析失败: {line}")
+                        logger.warning(f"版本行格式不正确：{line}")
+                    break
+            print("-"*50)
+            
             tn.close()
-            logger.info(f"设备连接成功：{ip}")
-            return "telnet连接成功"
+            logger.info(f"设备连接成功：{ip}，版本号：{version}")
+            return {"status": "success", "message": "telnet连接成功", "version": version}
             
         except ConnectionRefusedError:
-            return f"连接被拒绝：{ip}（可能未开启Telnet服务）"
+            return {"status": "error", "message": f"连接被拒绝：{ip}（可能未开启Telnet服务）"}
         except socket.timeout:
-            return f"连接超时：{ip}（设备可能不在线）"
+            return {"status": "error", "message": f"连接超时：{ip}（设备可能不在线）"}
         except Exception as e:
-            return f"连接失败：{ip} - {str(e)}"
+            return {"status": "error", "message": f"连接失败：{ip} - {str(e)}"}
             
     def get_devices(self) -> List[Dict]:
         """
