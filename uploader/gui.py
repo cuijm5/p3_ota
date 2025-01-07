@@ -4,31 +4,67 @@ GUI模块，负责：
 2. 设备连接界面
 3. 固件上传界面
 4. 状态显示
+
+该模块使用Tkinter构建图形用户界面，主要功能包括：
+- 扫描网络中的设备并显示在设备列表中
+- 连接选中的设备
+- 上传固件文件到设备
+- 显示当前固件上传状态
+- 提供OTA脚本编辑功能
+
+类：
+    UploaderGUI: 主GUI类，负责管理所有界面元素和功能
+
+依赖：
+    - tkinter: 用于构建GUI界面
+    - PIL: 用于处理logo图片
+    - device_manager: 用于设备管理相关操作
 """
 
 import logging
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
+from PIL import Image, ImageTk, ImageFilter
 from device_manager import DeviceManager
 
-# 配置日志
+# 配置日志模块
+# 使用当前模块名(__name__)作为日志记录器名称
+# 可以在其他模块中通过logging.getLogger(__name__)获取相同记录器
 logger = logging.getLogger(__name__)
 
 class UploaderGUI:
     """
-    固件上传机GUI主类
+    固件上传机GUI主类，负责管理整个图形用户界面
     
     属性：
-        device_manager: 设备管理实例
-        root: 主窗口
-        device_tree: 设备列表树
-        status_var: 状态栏变量
+        device_manager: DeviceManager实例，用于设备管理操作
+        root: Tkinter主窗口对象
+        device_tree: ttk.Treeview实例，用于显示设备列表
+        status_var: tk.StringVar实例，用于状态栏文本显示
+        firmware_status: tk.Label实例，显示固件上传状态
+        logo: ImageTk.PhotoImage实例，存储程序logo
+        scan_button: 扫描设备按钮
+        connect_button: 连接设备按钮
+        upload_button: 上传固件按钮
+        script_button: 查看OTA脚本按钮
     """
     def update_firmware_status(self):
-        """更新固件状态显示"""
+        """
+        更新固件状态显示
+        
+        功能：
+            - 检查firmware目录下是否存在.img固件文件
+            - 根据检查结果更新界面显示状态
+            - 如果存在固件文件，显示文件名和绿色状态
+            - 如果不存在固件文件，显示红色警告状态
+            
+        注意：
+            - 如果firmware目录不存在会自动创建
+            - 只显示第一个找到的.img文件
+        """
         import os
-        firmware_dir = 'firmware'
+        firmware_dir = '../firmware'
         if not os.path.exists(firmware_dir):
             os.makedirs(firmware_dir)
             
@@ -52,7 +88,18 @@ class UploaderGUI:
         初始化GUI界面
         
         参数：
-            device_manager: 设备管理实例
+            device_manager: DeviceManager实例，用于设备管理操作
+            
+        功能：
+            1. 初始化主窗口
+            2. 加载并显示logo
+            3. 创建设备列表
+            4. 添加控制按钮
+            5. 初始化状态栏
+            6. 检查固件状态
+            
+        异常处理：
+            - 如果初始化失败会记录错误日志并抛出异常
         """
         self.device_manager = device_manager
         logger.info("初始化GUI界面")
@@ -61,6 +108,32 @@ class UploaderGUI:
             self.root = tk.Tk()
             self.root.title("固件上传机")
             self.root.geometry("800x600")
+            
+            # 加载并显示logo
+            import os
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "image", "logo.png")
+            
+            if not os.path.exists(logo_path):
+                # 创建默认logo
+                from PIL import ImageDraw
+                logo_image = Image.new('RGB', (200, 100), color = (73, 109, 137))
+                d = ImageDraw.Draw(logo_image)
+                d.text((10,10), "OTA Uploader", fill=(255,255,0))
+                logger.warning("使用默认logo，未找到logo文件：%s", logo_path)
+            else:
+                logo_image = Image.open(logo_path)
+                logger.info("加载logo文件：%s", logo_path)
+            
+            # 按宽度缩放，保持宽高比
+            base_width = 200
+            w_percent = (base_width / float(logo_image.size[0]))
+            h_size = int((float(logo_image.size[1]) * float(w_percent)))
+            logo_image = logo_image.resize((base_width, h_size), Image.Resampling.LANCZOS)
+            
+            self.logo = ImageTk.PhotoImage(logo_image)
+            logo_label = tk.Label(self.root, image=self.logo)
+            logo_label.pack(pady=10)
+            
             logger.info("主窗口创建成功")
         except Exception as e:
             logger.error(f"主窗口初始化失败：{str(e)}")
@@ -102,6 +175,14 @@ class UploaderGUI:
     def start_scan(self):
         """
         启动设备扫描线程
+        
+        功能：
+            - 更新状态栏显示
+            - 启动后台线程执行scan_devices方法
+            - 记录扫描开始日志
+            
+        异常处理：
+            - 如果线程启动失败会记录错误日志并更新状态栏
         """
         logger.info("启动设备扫描")
         self.status_var.set("正在扫描设备...")
@@ -115,6 +196,15 @@ class UploaderGUI:
     def scan_devices(self):
         """
         扫描网络中的设备并更新设备列表
+        
+        功能：
+            1. 调用device_manager的scan_network方法扫描设备
+            2. 清空当前设备列表
+            3. 将扫描到的设备添加到设备树中
+            4. 更新状态栏显示扫描结果
+            
+        异常处理：
+            - 如果扫描失败会记录错误日志并更新状态栏
         """
         logger.info("开始扫描设备")
         try:
@@ -136,8 +226,16 @@ class UploaderGUI:
         """
         连接选中的设备
         
-        返回：
-            None
+        功能：
+            1. 检查是否有设备被选中
+            2. 遍历所有选中的设备
+            3. 对每个设备调用device_manager的connect方法
+            4. 根据连接结果更新设备状态
+            5. 记录连接成功/失败数量
+            
+        异常处理：
+            - 如果没有选中设备会弹出警告框
+            - 连接异常会记录错误日志并更新设备状态
         """
         logger.info("尝试连接设备")
         selected = self.device_tree.selection()
@@ -167,6 +265,17 @@ class UploaderGUI:
     def upload_firmware(self):
         """
         固件上传功能
+        
+        功能：
+            1. 弹出文件选择对话框选择固件文件
+            2. 调用app模块的copy_firmware方法拷贝固件
+            3. 根据拷贝结果显示成功/失败消息
+            4. 更新固件状态显示
+            5. 记录上传日志
+            
+        异常处理：
+            - 如果未选择文件会记录警告日志
+            - 拷贝过程中发生错误会弹出错误框并记录错误日志
         """
         logger.info("尝试上传固件")
         
@@ -204,6 +313,17 @@ class UploaderGUI:
     def open_script_editor(self):
         """
         打开脚本编辑器窗口
+        
+        功能：
+            1. 创建新的顶级窗口
+            2. 添加文本编辑区域
+            3. 检查是否存在ota.sh文件
+                - 如果存在则加载内容并设置为只读
+                - 如果不存在则创建新的可编辑文件
+            4. 记录编辑器初始化日志
+            
+        异常处理：
+            - 如果初始化失败会记录错误日志并抛出异常
         """
         logger.info("打开脚本编辑器")
         try:
@@ -217,7 +337,7 @@ class UploaderGUI:
             
             # 检查是否存在ota.sh文件
             import os
-            script_path = "sh/ota.sh"
+            script_path = "../sh/ota.sh"
             if os.path.exists(script_path):
                 try:
                     with open(script_path, 'r') as f:
@@ -240,6 +360,13 @@ class UploaderGUI:
     def run(self):
         """
         启动GUI主循环
+        
+        功能：
+            - 调用Tkinter的mainloop方法启动事件循环
+            - 记录GUI启动和结束日志
+            
+        异常处理：
+            - 如果运行异常会记录错误日志并抛出异常
         """
         logger.info("启动GUI主循环")
         try:

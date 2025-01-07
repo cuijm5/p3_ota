@@ -34,7 +34,7 @@ logger.addHandler(console_handler)
 app = Flask(__name__)
 device_manager = DeviceManager()
 
-UPLOAD_FOLDER = 'firmware'
+UPLOAD_FOLDER = '../firmware'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 logger.info(f"初始化完成，上传目录：{UPLOAD_FOLDER}")
 
@@ -49,6 +49,13 @@ def copy_firmware(src_path):
     """
     try:
         import shutil
+        # 清理旧固件文件
+        for old_file in os.listdir(UPLOAD_FOLDER):
+            if old_file.endswith('.img'):
+                os.remove(os.path.join(UPLOAD_FOLDER, old_file))
+                logger.info(f"已删除旧固件文件：{old_file}")
+        
+        # 拷贝新固件文件
         filename = os.path.basename(src_path)
         dest_path = os.path.join(UPLOAD_FOLDER, filename)
         shutil.copy(src_path, dest_path)

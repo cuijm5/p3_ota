@@ -1,0 +1,29 @@
+# Ignore app.log file
+app.log
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build files
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.idea/
+.vscode/
+
+# Log files
+*.log

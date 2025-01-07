@@ -13,6 +13,14 @@ from typing import List, Dict
 
 # 配置日志
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# 创建文件日志处理器
+file_handler = logging.FileHandler('scan_debug.log')
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 class DeviceManager:
     """
@@ -45,18 +53,43 @@ class DeviceManager:
             
         network_prefix = '.'.join(base_ip.split('.')[:3])
         devices = []
-        logger.info(f"扫描网络范围：{network_prefix}.1-100")
+        logger.info(f"扫描网络范围：{network_prefix}.1-255")
         
-        # 扫描100个IP地址
-        for i in range(1, 101):
-            ip = f"{network_prefix}.{i}"
+        # 使用线程池并发扫描
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def scan_single_ip(ip):
+            """扫描单个IP地址"""
             logger.debug(f"正在扫描IP：{ip}")
-            if self.ping_device(ip):
-                logger.info(f"发现在线设备：{ip}")
-                devices.append({
+            if self.telnet_check_device(ip):
+                logger.info(f"发现有效设备：{ip}")
+                device_info = {
                     'ip': ip,
                     'status': '在线'
-                })
+                }
+                logger.debug(f"设备详细信息：{device_info}")
+                return device_info
+            return None
+            
+        # 创建线程池，最大并发数100
+        with ThreadPoolExecutor(max_workers=100) as executor:
+            # 提交所有扫描任务
+            futures = {
+                executor.submit(scan_single_ip, f"{network_prefix}.{i}"): i
+                for i in range(1, 256)
+            }
+            
+            # 显示进度
+            total = len(futures)
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                if completed % 10 == 0 or completed == total:
+                    logger.info(f"扫描进度：{completed}/{total} ({completed/total*100:.1f}%)")
+                
+                result = future.result()
+                if result:
+                    devices.append(result)
         
         with self.lock:
             self.devices = devices
@@ -82,26 +115,45 @@ class DeviceManager:
             logger.error(f"获取本地IP地址失败：{str(e)}")
             return ""
             
-    def ping_device(self, ip: str) -> bool:
+    def telnet_check_device(self, ip: str) -> bool:
         """
-        Ping设备检查是否在线
+        通过telnet检查设备是否在线并验证NX5标识
         
         参数：
             ip: 目标设备IP地址
             
         返回：
-            bool: 设备是否在线
+            bool: 设备是否在线且包含NX5标识
         """
-        logger.debug(f"Ping设备：{ip}")
+        logger.debug(f"Telnet检查设备：{ip}")
         try:
-            socket.setdefaulttimeout(1)
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((ip, 80))
-            s.close()
-            logger.debug(f"设备在线：{ip}")
+            tn = telnetlib.Telnet(ip, timeout=2)
+            # 读取欢迎信息
+            index, match, text = tn.expect([b"NX5"], timeout=2)
+            
+            if index == -1:
+                logger.debug(f"设备未包含NX5标识：{ip}")
+                tn.close()
+                return False
+                
+            # 尝试登录
+            tn.read_until(b"login: ")
+            tn.write(b"root\n")
+            tn.read_until(b"Password: ")
+            tn.write(b"123456\n")
+            
+            # 验证登录成功
+            index, _, _ = tn.expect([b"Login incorrect", b"#"], timeout=2)
+            tn.close()
+            
+            if index == 0:
+                logger.debug(f"设备登录失败：{ip}")
+                return False
+                
+            logger.debug(f"设备检查成功：{ip}")
             return True
         except Exception as e:
-            logger.debug(f"设备离线或无法连接：{ip} - {str(e)}")
+            logger.debug(f"设备无法连接：{ip} - {str(e)}")
             return False
             
     def connect(self, ip: str) -> str:
