@@ -27,6 +27,7 @@ from tkinter import ttk, messagebox
 import threading
 from PIL import Image, ImageTk, ImageFilter
 from device_manager import DeviceManager
+import urllib.parse
 
 # 配置日志模块
 # 使用当前模块名(__name__)作为日志记录器名称
@@ -183,6 +184,10 @@ class UploaderGUI:
         self.firmware_status = tk.Label(control_frame, text="未上传固件", fg="red", font=("Arial", 10, "italic"))
         self.firmware_status.pack(side=tk.LEFT, padx=10)
         
+        # HTTP服务器状态显示
+        self.http_status = tk.Label(control_frame, text="HTTP服务: 未启动", fg="red", font=("Arial", 10, "italic"))
+        self.http_status.pack(side=tk.RIGHT, padx=10)
+        
         # 状态栏
         status_frame = tk.Frame(self.root)
         status_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -196,9 +201,27 @@ class UploaderGUI:
         self.version_label = tk.Label(status_frame, text="待升级版本: -", bd=1, relief=tk.SUNKEN, anchor=tk.E)
         self.version_label.pack(side=tk.RIGHT, padx=5)
         
+        # 创建进度条Frame
+        self.progress_frame = tk.Frame(self.root)
+        self.progress_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # 创建进度条和标签
+        self.progress_label = tk.Label(self.progress_frame, text="", anchor="w")
+        self.progress_label.pack(side=tk.LEFT, padx=5)
+        
+        self.progress_bar = ttk.Progressbar(self.progress_frame, length=300, mode='determinate')
+        self.progress_bar.pack(side=tk.LEFT, padx=5)
+        
+        # 隐藏进度条（默认）
+        self.progress_frame.pack_forget()
+        
         # 初始化完成后更新固件状态
         self.update_firmware_status()
         
+        # 更新HTTP服务器状态
+        if self.flask_app:
+            self.update_http_status()
+            
     def start_scan(self):
         """
         启动设备扫描线程
@@ -270,6 +293,17 @@ class UploaderGUI:
                 logger.info(f"开始自动连接{len(online_devices)}个在线设备")
                 self.device_tree.selection_set(online_devices)
                 
+                # 获取本机IP
+                try:
+                    import socket
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(('8.8.8.8', 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                except Exception as e:
+                    logger.error(f"获取本机IP失败: {str(e)}")
+                    return
+                
                 # 连接设备并获取版本信息
                 for item_id in online_devices:
                     ip = self.device_tree.item(item_id)['values'][0]
@@ -287,6 +321,11 @@ class UploaderGUI:
                                 upgrade_status
                             ))
                             logger.info(f"设备连接成功：{ip}，版本：{device_version}，升级状态：{upgrade_status}")
+                            
+                            # 如果需要升级，启动固件下载
+                            if upgrade_status == "需要升级":
+                                self.start_firmware_download(ip, local_ip)
+                                
                         else:
                             self.device_tree.item(item_id, values=(
                                 ip,
@@ -303,7 +342,6 @@ class UploaderGUI:
                             "",
                             "-"
                         ))
-            
         except Exception as e:
             logger.error(f"设备扫描失败：{str(e)}")
             self.status_var.set("扫描失败")
@@ -467,3 +505,147 @@ class UploaderGUI:
         """窗口关闭时的处理函数"""
         logger.info("正在关闭应用程序...")
         self.root.destroy()
+
+    def update_http_status(self):
+        """更新HTTP服务器状态显示"""
+        if not hasattr(self, 'http_status'):
+            return
+            
+        if self.flask_app and self.flask_app.thread and self.flask_app.thread.is_alive():
+            self.http_status.config(
+                text=f"HTTP服务: 运行中 ({self.flask_app.host}:{self.flask_app.port})",
+                fg="green",
+                font=("Arial", 10, "bold")
+            )
+        else:
+            self.http_status.config(
+                text="HTTP服务: 未启动",
+                fg="red",
+                font=("Arial", 10, "italic")
+            )
+
+    def update_download_progress(self, status: str, percent: int):
+        """
+        更新下载进度显示
+        
+        参数：
+            status: 状态信息
+            percent: 进度百分比（-1表示错误）
+        """
+        def update():
+            # 确保进度条可见
+            self.progress_frame.pack(fill=tk.X, padx=10, pady=5)
+            
+            if percent >= 0:
+                self.progress_bar['value'] = percent
+                self.progress_label.config(text=f"{status} {percent}%", fg="black")
+            else:
+                # 错误状态
+                self.progress_bar['value'] = 0
+                self.progress_label.config(text=status, fg="red")
+                
+            # 如果下载完成，延时隐藏进度条
+            if percent == 100:
+                self.root.after(3000, lambda: self.progress_frame.pack_forget())
+                
+        # 在主线程中更新UI
+        self.root.after(0, update)
+        
+    def update_device_progress(self, ip: str, percent: int):
+        """
+        更新设备下载进度
+        
+        参数：
+            ip: 设备IP地址
+            percent: 进度百分比
+        """
+        # 在主线程中更新UI
+        def update():
+            for item_id in self.device_tree.get_children():
+                if self.device_tree.item(item_id)['values'][0] == ip:
+                    self.device_tree.item(item_id, values=(
+                        ip,
+                        f"正在下载 {percent}%",
+                        self.device_tree.item(item_id)['values'][2],
+                        self.device_tree.item(item_id)['values'][3]
+                    ))
+                    break
+        
+        self.root.after(0, update)
+
+    def start_firmware_download(self, ip: str, local_ip: str):
+        """
+        开始固件下载
+        
+        参数：
+            ip: 设备IP地址
+            local_ip: 本地服务器IP地址
+        """
+        logger.info(f"开始下载固件到设备：{ip}")
+        
+        # 构造wget命令，确保添加换行符
+        import os
+        import urllib.parse
+        firmware_dir = '../firmware'
+        img_files = [f for f in os.listdir(firmware_dir) if f.endswith('.img')]
+        if img_files:
+            firmware_name = img_files[0]
+            encoded_name = urllib.parse.quote(firmware_name)
+            wget_cmd = f"wget 'http://{local_ip}:5000/firmware/{encoded_name}' -O /tmp/ota.img\n"
+        else:
+            logger.error("未找到固件文件")
+            return
+        
+        def download_thread():
+            # 找到对应的设备项
+            for item_id in self.device_tree.get_children():
+                if self.device_tree.item(item_id)['values'][0] == ip:
+                    try:
+                        # 更新状态为"正在下载"
+                        self.device_tree.item(item_id, values=(
+                            ip,
+                            "正在下载 0%",
+                            self.device_tree.item(item_id)['values'][2],
+                            self.device_tree.item(item_id)['values'][3]
+                        ))
+                        
+                        # 开始下载并监控进度
+                        result = self.device_manager.download_firmware(
+                            ip, 
+                            wget_cmd,
+                            self.update_device_progress
+                        )
+                        
+                        # 根据下载结果更新状态
+                        if result["status"] == "success":
+                            # 下载成功
+                            self.device_tree.item(item_id, values=(
+                                ip,
+                                "下载完成",
+                                self.device_tree.item(item_id)['values'][2],
+                                self.device_tree.item(item_id)['values'][3]
+                            ))
+                            logger.info(f"固件下载成功：{ip}")
+                        else:
+                            # 下载失败
+                            error_msg = result.get("message", "未知错误")
+                            self.device_tree.item(item_id, values=(
+                                ip,
+                                f"下载失败: {error_msg}",
+                                self.device_tree.item(item_id)['values'][2],
+                                self.device_tree.item(item_id)['values'][3]
+                            ))
+                            logger.error(f"固件下载失败：{ip} - {error_msg}")
+                    except Exception as e:
+                        # 发生异常
+                        self.device_tree.item(item_id, values=(
+                            ip,
+                            f"下载异常: {str(e)}",
+                            self.device_tree.item(item_id)['values'][2],
+                            self.device_tree.item(item_id)['values'][3]
+                        ))
+                        logger.error(f"固件下载异常：{ip} - {str(e)}")
+                    break
+                
+        # 启动下载线程
+        threading.Thread(target=download_thread).start()

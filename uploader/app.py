@@ -46,6 +46,11 @@ class FlaskAppWrapper:
         self.port = port
         self.server = None
         self.thread = None
+        self.gui = None  # 用于存储GUI引用
+
+    def set_gui(self, gui):
+        """设置GUI引用"""
+        self.gui = gui
 
     def run(self):
         """在新线程中启动Flask服务器"""
@@ -61,10 +66,16 @@ class FlaskAppWrapper:
         self.thread.daemon = True  # 设置为守护线程，这样主程序退出时会自动结束
         self.thread.start()
         logger.info(f"HTTP服务器启动于 http://{self.host}:{self.port}")
+        
+        # 启动后更新GUI状态显示
+        if self.gui:
+            self.gui.update_http_status()
 
     def shutdown(self):
         """关闭Flask服务器"""
         logger.info("HTTP服务器将随主程序退出而关闭")
+        if self.gui:
+            self.gui.update_http_status()
 
 app = Flask(__name__)
 CORS(app)  # 启用CORS支持
@@ -200,6 +211,9 @@ if __name__ == '__main__':
         # 创建GUI并传入Flask服务器实例
         gui = UploaderGUI(device_manager, flask_app)
         logger.info("GUI初始化完成")
+        
+        # 设置GUI引用
+        flask_app.set_gui(gui)
         
         # 启动HTTP服务器
         flask_app.run()

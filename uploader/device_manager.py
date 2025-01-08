@@ -9,7 +9,8 @@ import logging
 import socket
 import telnetlib
 import threading
-from typing import List, Dict
+import re
+from typing import List, Dict, Callable
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -287,3 +288,111 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"固件上传失败：{ip} - {str(e)}")
             return False
+
+    def monitor_download(self, tn: telnetlib.Telnet, ip: str, callback) -> dict:
+        """
+        监控wget下载进度
+        
+        参数：
+            tn: telnet连接实例
+            ip: 设备IP地址
+            callback: 进度回调函数
+            
+        返回：
+            dict: 下载状态信息
+        """
+        try:
+            while True:
+                # 读取wget输出
+                data = tn.read_until(b"\n", timeout=1)
+                if not data:
+                    continue
+                    
+                output = data.decode('utf-8', errors='ignore')
+                logger.debug(f"设备[{ip}] wget输出: {output}")
+                
+                # 匹配进度信息
+                if "%" in output:
+                    try:
+                        # 提取进度百分比
+                        percent = int(re.search(r'(\d+)%', output).group(1))
+                        logger.info(f"设备[{ip}] 下载进度: {percent}%")
+                        callback(ip, percent)  # 调用回调函数更新进度
+                        
+                        if percent == 100:
+                            return {"status": "success", "progress": 100}
+                    except (AttributeError, ValueError) as e:
+                        logger.warning(f"设备[{ip}] 解析进度失败: {str(e)}")
+                        
+                # 检查是否下载完成
+                if "saved" in output.lower():
+                    logger.info(f"设备[{ip}] 下载完成")
+                    callback(ip, 100)  # 确保显示100%
+                    return {"status": "success", "progress": 100}
+                    
+                # 检查是否出现错误
+                if any(err in output.lower() for err in ["error", "failed", "unable to", "cannot"]):
+                    error_msg = f"下载失败: {output}"
+                    logger.error(f"设备[{ip}] {error_msg}")
+                    return {"status": "error", "message": error_msg}
+                    
+                # 检查是否返回到命令提示符
+                if output.strip().endswith('#'):
+                    if "100%" not in output and "saved" not in output.lower():
+                        error_msg = "下载未完成就返回提示符"
+                        logger.error(f"设备[{ip}] {error_msg}")
+                        return {"status": "error", "message": error_msg}
+                    
+        except Exception as e:
+            error_msg = f"监控下载异常: {str(e)}"
+            logger.error(f"设备[{ip}] {error_msg}")
+            return {"status": "error", "message": error_msg}
+            
+    def download_firmware(self, ip: str, wget_cmd: str, progress_callback) -> dict:
+        """
+        通过wget下载固件到设备
+        
+        参数：
+            ip: 设备IP地址
+            wget_cmd: wget命令
+            progress_callback: 进度回调函数
+            
+        返回：
+            dict: 下载状态信息
+        """
+        logger.info(f"开始下载固件到设备 {ip}")
+        logger.debug(f"wget命令: {wget_cmd}")
+        
+        try:
+            # 连接设备
+            tn = telnetlib.Telnet(ip, timeout=5)
+            
+            # 登录认证
+            tn.read_until(b"login: ", timeout=5)
+            tn.write(b"root\n")
+            tn.read_until(b"Password: ", timeout=5)
+            tn.write(b"123456\n")
+            
+            # 验证登录成功
+            index, _, _ = tn.expect([b"Login incorrect", b"#"], timeout=5)
+            if index == 0:
+                error_msg = "设备登录失败"
+                logger.error(f"{error_msg}: {ip}")
+                tn.close()
+                return {"status": "error", "message": error_msg}
+                
+            # 执行wget命令
+            tn.write(wget_cmd.encode())
+            
+            # 监控下载进度
+            result = self.monitor_download(tn, ip, progress_callback)
+            
+            # 关闭连接
+            tn.write(b"\n")  # 确保命令执行完成
+            tn.close()
+            return result
+            
+        except Exception as e:
+            error_msg = f"下载固件失败: {str(e)}"
+            logger.error(f"设备[{ip}] {error_msg}")
+            return {"status": "error", "message": error_msg}
