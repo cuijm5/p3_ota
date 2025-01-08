@@ -253,8 +253,27 @@ class UploaderGUI:
         logo_image = logo_image.resize((base_width, h_size), Image.Resampling.LANCZOS)
         
         self.logo = ImageTk.PhotoImage(logo_image)
-        logo_label = tk.Label(self.root, image=self.logo)
+        logo_label = tk.Label(self.root, image=self.logo, cursor="hand2")  # 添加手型光标
         logo_label.pack(pady=10)
+        
+        # 添加点击计数器和处理函数
+        self.logo_click_count = 0
+        self.last_click_time = 0
+        
+        def on_logo_click(event):
+            current_time = time.time()
+            if current_time - self.last_click_time > 1.5:  # 重置计数器的时间阈值
+                self.logo_click_count = 1
+            else:
+                self.logo_click_count += 1
+                
+            self.last_click_time = current_time
+            
+            if self.logo_click_count == 5:
+                self.logo_click_count = 0  # 重置计数器
+                messagebox.showinfo("彩蛋", "作者：黄浩然")
+                
+        logo_label.bind("<Button-1>", on_logo_click)  # 绑定点击事件
         
         logger.info("主窗口创建成功")
         
@@ -315,7 +334,7 @@ class UploaderGUI:
         status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         # 版本号显示
-        version_info = tk.Label(status_frame, text=VERSION, bd=1, relief=tk.SUNKEN, anchor=tk.E)  # 使用导入的VERSION
+        version_info = tk.Label(status_frame, text=VERSION, bd=1, relief=tk.SUNKEN, anchor=tk.E)
         version_info.pack(side=tk.RIGHT, padx=5)
         
         # 版本号显示

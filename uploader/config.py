@@ -108,4 +108,4 @@ UPGRADE_CONFIG = {
 }
 
 # 版本信息
-VERSION = "V1.0.7" 
+VERSION = "V1.0.8" 
