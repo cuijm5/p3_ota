@@ -6,8 +6,9 @@ echo Building executable...
 cd uploader
 pyinstaller --clean ^
     --noconsole ^
+    --add-data "../image;image" ^
     --name="P3_OTA_Updater" ^
-    gui.py
+    app.py
 
 echo Build complete!
 pause 
