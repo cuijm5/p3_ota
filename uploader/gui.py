@@ -32,9 +32,11 @@ import urllib.parse
 import time
 import telnetlib
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 from config import THREAD_CONFIG, GUI_CONFIG, VERSION
+from upgrade_monitor import UpgradeMonitor
 
 # 定义下载状态常量
 class DownloadStatus:
@@ -56,6 +58,13 @@ def setup_logging():
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
     # 如果日志文件已存在且大于2MB，则删除它和它的备份文件
     log_file = 'app.log'
     backup_file = 'app.log.1'
@@ -72,7 +81,7 @@ def setup_logging():
     except Exception as e:
         print(f"清理日志文件时出错: {e}")
     
-    # 创建RotatingFileHandler，限制文件大小为2MB
+    # 创建文件处理器
     try:
         file_handler = RotatingFileHandler(
             log_file,
@@ -81,11 +90,17 @@ def setup_logging():
             encoding='utf-8'
         )
         file_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
     except Exception as e:
         print(f"设置日志处理器时出错: {e}")
+    
+    # 设置根日志记录器，确保所有模块的日志都能被捕获
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
     
     return logger
 
@@ -231,7 +246,19 @@ class UploaderGUI:
         logger.info("主窗口创建成功")
         
         # 设备列表
-        self.device_tree = ttk.Treeview(self.root, columns=("ip", "status", "version", "pid", "did", "upgrade_status"), show="headings")
+        self.device_tree = ttk.Treeview(
+            self.root,
+            columns=("ip", "status", "version", "pid", "did", "upgrade_status"),
+            show="headings",
+            selectmode="browse"
+        )
+        
+        # 配置颜色标签
+        self.device_tree.tag_configure("red", foreground="red")
+        self.device_tree.tag_configure("green", foreground="green")
+        self.device_tree.tag_configure("yellow", foreground="orange")
+        
+        # 设置列标题
         self.device_tree.heading("ip", text="IP地址")
         self.device_tree.heading("status", text="状态")
         self.device_tree.heading("version", text="版本号")
@@ -256,10 +283,6 @@ class UploaderGUI:
         
         self.upload_button = tk.Button(control_frame, text="上传固件", command=self.upload_firmware)
         self.upload_button.pack(side=tk.LEFT, padx=5)
-        
-        # 添加设置按钮
-        self.settings_button = tk.Button(control_frame, text="设置", command=self.show_settings)
-        self.settings_button.pack(side=tk.LEFT, padx=5)
         
         # 固件状态显示
         self.firmware_status = tk.Label(control_frame, text="未上传固件", fg="red", font=("Arial", 10, "italic"))
@@ -313,6 +336,8 @@ class UploaderGUI:
             thread_name_prefix='download'
         )
             
+        self.upgrade_monitor = UpgradeMonitor()
+        
     def start_scan(self):
         """
         启动设备扫描线程
@@ -355,7 +380,7 @@ class UploaderGUI:
             for item_id in self.device_tree.get_children():
                 values = self.device_tree.item(item_id)['values']
                 if values[0] == device_info['ip']:
-                    # 更新现有设备
+                    # 更新现有设备，重置颜色标签
                     self.device_tree.item(item_id, values=(
                         device_info['ip'],
                         device_info['status'],
@@ -363,7 +388,7 @@ class UploaderGUI:
                         device_info['pid'],
                         device_info['did'],
                         device_info['upgrade_status']
-                    ))
+                    ), tags=())  # 重置颜色标签
                     device_exists = True
                     break
             
@@ -376,7 +401,7 @@ class UploaderGUI:
                     device_info['pid'],
                     device_info['did'],
                     device_info['upgrade_status']
-                ))
+                ), tags=())  # 新设备不带颜色标签
 
     def scan_devices(self):
         """扫描并连接设备"""
@@ -401,7 +426,17 @@ class UploaderGUI:
                     # 检查是否需要升级
                     firmware_dir = '../firmware'
                     img_files = [f for f in os.listdir(firmware_dir) if f.endswith('.img')]
-                    if img_files and device_info['pid'] == '12581207':
+                    target_version = self.get_target_version() if img_files else ""
+                    
+                    # 只有当PID匹配且版本号不同时才需要升级
+                    needs_upgrade = (
+                        img_files 
+                        and device_info['pid'] == '12581207'
+                        and target_version 
+                        and device_info['version'] != target_version
+                    )
+                    
+                    if needs_upgrade:
                         # 需要升级的设备
                         self.insert_device_sorted({
                             'ip': device['ip'],
@@ -415,13 +450,19 @@ class UploaderGUI:
                         self.start_firmware_download(device['ip'], local_ip)
                     else:
                         # 不需要升级的设备
+                        upgrade_status = '-'
+                        if device_info['pid'] != '12581207':
+                            upgrade_status = 'PID不匹配'
+                        elif target_version and device_info['version'] == target_version:
+                            upgrade_status = '版本已是最新'
+                            
                         self.insert_device_sorted({
                             'ip': device['ip'],
                             'status': DownloadStatus.CONNECTED,
                             'version': device_info['version'],
                             'pid': device_info['pid'],
                             'did': device_info['did'],
-                            'upgrade_status': 'PID不匹配' if device_info['pid'] != '12581207' else '-'
+                            'upgrade_status': upgrade_status
                         })
                 else:
                     # 连接失败的设备
@@ -813,7 +854,7 @@ class UploaderGUI:
             ip: 目标设备IP地址
             local_ip: 本机IP地址
         """
-        logger.info(f"准备下载固件到设备：{ip}")
+        logger.info(f"============= 开始固件下载流程 [{ip}] =============")
         
         # 获取实际的固件文件名
         firmware_dir = '../firmware'
@@ -824,6 +865,8 @@ class UploaderGUI:
             
         firmware_name = img_files[0]
         encoded_name = urllib.parse.quote(firmware_name)  # URL编码文件名
+        logger.info(f"固件文件名: {firmware_name}")
+        logger.info(f"URL编码后: {encoded_name}")
         
         # 构建wget命令
         firmware_url = f"http://{local_ip}:5000/firmware/{encoded_name}"
@@ -831,6 +874,7 @@ class UploaderGUI:
         logger.info(f"wget命令：{wget_cmd}")
         
         def download_thread():
+            logger.info(f"[{ip}] 开始下载线程")
             # 找到对应的设备项
             for item_id in self.device_tree.get_children():
                 if self.device_tree.item(item_id)['values'][0] == ip:
@@ -841,6 +885,8 @@ class UploaderGUI:
                         pid = current_values[3]
                         did = current_values[4]
                         upgrade_status = current_values[5]
+                        
+                        logger.info(f"[{ip}] 当前设备信息: version={version}, pid={pid}, did={did}, status={upgrade_status}")
                         
                         # 更新状态为"等待下载"
                         self.device_tree.item(item_id, values=(
@@ -853,6 +899,7 @@ class UploaderGUI:
                         ))
                         
                         # 开始下载并监控进度
+                        logger.info(f"[{ip}] 开始执行下载命令")
                         result = self.device_manager.download_firmware(
                             ip, 
                             wget_cmd,
@@ -862,6 +909,7 @@ class UploaderGUI:
                         # 根据下载结果更新状态
                         if result["status"] == "success":
                             # 下载成功
+                            logger.info(f"[{ip}] 固件下载成功，准备执行升级命令")
                             self.device_tree.item(item_id, values=(
                                 ip,
                                 DownloadStatus.SUCCESS,
@@ -870,12 +918,10 @@ class UploaderGUI:
                                 did,
                                 upgrade_status
                             ))
-                            logger.info(f"固件下载成功：{ip}")
                             
-                            # 等待3秒后执行升级命令
-                            # time.sleep(3)
                             try:
                                 # 连接设备
+                                logger.info(f"[{ip}] 尝试telnet连接")
                                 tn = telnetlib.Telnet(ip, timeout=5)
                                 
                                 # 登录认证
@@ -889,35 +935,37 @@ class UploaderGUI:
                                 if index == 0:
                                     raise Exception("设备登录失败")
                                 
+                                logger.info(f"[{ip}] telnet登录成功")
+                                
                                 # 执行升级命令
-                                logger.info(f"设备[{ip}] 开始执行升级命令")
+                                logger.info(f"[{ip}] 开始执行升级命令")
                                 try:
                                     # 确保连接状态
                                     tn.write(b"\n")
                                     response = tn.read_until(b"#", timeout=5).decode('utf-8')
                                     if '#' not in response:
-                                        logger.error(f"设备[{ip}] 执行升级命令前检查连接失败")
+                                        logger.error(f"[{ip}] 执行升级命令前检查连接失败")
                                         raise Exception("设备连接状态异常")
                                     
                                     # 在后台执行升级命令
-                                    logger.info(f"设备[{ip}] 发送升级命令")
+                                    logger.info(f"[{ip}] 发送升级命令")
                                     tn.write(b"nohup ota_upgrade /tmp/ota.img > /dev/null 2>&1 &\n")
                                     
                                     # 等待命令响应
                                     response = tn.read_until(b"#", timeout=5).decode('utf-8')
-                                    logger.info(f"设备[{ip}] 升级命令响应: {response}")
+                                    logger.info(f"[{ip}] 升级命令响应: {response}")
                                     
                                     if '#' not in response:
-                                        logger.error(f"设备[{ip}] 升级命令可能未执行成功")
+                                        logger.error(f"[{ip}] 升级命令可能未执行成功")
                                         raise Exception("升级命令执行异常")
                                     
                                     # 验证命令是否在运行
                                     tn.write(b"ps | grep ota_upgrade\n")
                                     ps_response = tn.read_until(b"#", timeout=5).decode('utf-8')
-                                    logger.info(f"设备[{ip}] 进程检查结果: {ps_response}")
+                                    logger.info(f"[{ip}] 进程检查结果: {ps_response}")
                                     
                                     if 'ota_upgrade' not in ps_response:
-                                        logger.error(f"设备[{ip}] 未检测到升级进程")
+                                        logger.error(f"[{ip}] 未检测到升级进程")
                                         raise Exception("升级进程未启动")
                                     
                                     # 更新状态为升级中
@@ -929,9 +977,23 @@ class UploaderGUI:
                                         did,
                                         upgrade_status
                                     ))
-                                    logger.info(f"设备[{ip}] 升级命令已在后台执行")
+                                    logger.info(f"[{ip}] 升级命令已在后台执行")
+                                    
+                                    # 启动升级监控
+                                    target_version = self.get_target_version()
+                                    logger.info(f"[{ip}] 目标版本号: {target_version}")
+                                    if target_version:
+                                        logger.info(f"[{ip}] 启动升级监控")
+                                        self.upgrade_monitor.start_monitor(
+                                            ip,
+                                            target_version,
+                                            self.update_device_status
+                                        )
+                                        logger.info(f"[{ip}] 升级监控已启动")
+                                    else:
+                                        logger.error(f"[{ip}] 无法获取目标版本号，不启动监控")
                                 except Exception as e:
-                                    logger.error(f"设备[{ip}] 执行升级命令时出错: {str(e)}")
+                                    logger.error(f"[{ip}] 执行升级命令时出错: {str(e)}")
                                     self.device_tree.item(item_id, values=(
                                         ip,
                                         DownloadStatus.UPGRADE_FAILED,
@@ -947,6 +1009,7 @@ class UploaderGUI:
                                         pass
                             except Exception as e:
                                 error_msg = f"执行升级命令失败: {str(e)}"
+                                logger.error(f"[{ip}] {error_msg}")
                                 self.device_tree.item(item_id, values=(
                                     ip,
                                     DownloadStatus.UPGRADE_FAILED,
@@ -955,10 +1018,10 @@ class UploaderGUI:
                                     did,
                                     upgrade_status
                                 ))
-                                logger.error(f"设备[{ip}] {error_msg}")
                         else:
                             # 下载失败
                             error_msg = result.get("message", "未知错误")
+                            logger.error(f"[{ip}] 固件下载失败: {error_msg}")
                             self.device_tree.item(item_id, values=(
                                 ip,
                                 f"{DownloadStatus.FAILED}: {error_msg}",
@@ -967,9 +1030,9 @@ class UploaderGUI:
                                 did,
                                 upgrade_status
                             ))
-                            logger.error(f"固件下载失败：{ip} - {error_msg}")
                     except Exception as e:
                         # 发生异常
+                        logger.error(f"[{ip}] 固件下载异常: {str(e)}")
                         self.device_tree.item(item_id, values=(
                             ip,
                             f"{DownloadStatus.FAILED}: {str(e)}",
@@ -978,84 +1041,96 @@ class UploaderGUI:
                             did,
                             upgrade_status
                         ))
-                        logger.error(f"固件下载异常：{ip} - {str(e)}")
                     break
                 
         # 使用线程池提交下载任务
+        logger.info(f"[{ip}] 提交下载任务到线程池")
         self.download_executor.submit(download_thread)
-        logger.info(f"已提交下载任务到线程池：{ip}")
+        logger.info(f"============= 下载任务已提交 [{ip}] =============")
 
-    def show_settings(self):
-        """显示设置对话框"""
-        # 如果有正在进行的下载任务，禁止修改设置
-        active_downloads = False
-        for item_id in self.device_tree.get_children():
-            status = self.device_tree.item(item_id)['values'][1]
-            if status in [DownloadStatus.IN_PROGRESS, DownloadStatus.WAITING]:
-                active_downloads = True
-                break
+    def update_device_status(self, ip: str, status: str, color: str = "black", device_info: dict = None):
+        """
+        更新设备状态和信息
         
-        if active_downloads:
-            messagebox.showwarning("警告", "当前有下载任务正在进行，无法修改设置")
-            return
+        参数：
+            ip: 设备IP地址
+            status: 状态文本
+            color: 状态颜色
+            device_info: 可选的设备信息字典，包含version、pid、did等信息
+        """
+        def update():
+            with self.tree_lock:
+                for item_id in self.device_tree.get_children():
+                    values = list(self.device_tree.item(item_id)['values'])
+                    if values[0] == ip:
+                        values[1] = status  # 更新状态
+                        
+                        # 如果提供了设备信息，更新相应字段
+                        if device_info:
+                            if 'version' in device_info:
+                                values[2] = device_info['version']  # 更新版本号
+                            if 'pid' in device_info:
+                                values[3] = device_info['pid']  # 更新PID
+                            if 'did' in device_info:
+                                values[4] = device_info['did']  # 更新DID
+                            if 'need_upgrade' in device_info:
+                                values[5] = device_info['need_upgrade']  # 更新是否需要升级
+                        
+                        # 更新树形视图
+                        self.device_tree.item(item_id, values=tuple(values))
+                        self.device_tree.item(item_id, tags=(color,))
+                        logger.info(f"设备[{ip}]状态已更新：{status}，信息：{device_info if device_info else '无'}")
+                        break
+        
+        # 在主线程中更新UI
+        self.root.after(0, update)
+        
+    def get_target_version(self) -> str:
+        """获取目标版本号"""
+        try:
+            firmware_dir = '../firmware'
+            img_files = [f for f in os.listdir(firmware_dir) if f.endswith('.img')]
+            if not img_files:
+                logger.error("固件目录为空")
+                return ""
+                
+            # 从文件名中提取版本号
+            filename = img_files[0]
+            logger.info(f"固件文件名：{filename}")
             
-        # 创建设置对话框
-        settings_window = tk.Toplevel(self.root)
-        settings_window.title("设置")
-        settings_window.geometry("300x150")
-        settings_window.transient(self.root)  # 设置为主窗口的子窗口
-        settings_window.grab_set()  # 模态对话框
-        
-        # 居中显示
-        settings_window.update_idletasks()
-        width = settings_window.winfo_width()
-        height = settings_window.winfo_height()
-        x = (settings_window.winfo_screenwidth() // 2) - (width // 2)
-        y = (settings_window.winfo_screenheight() // 2) - (height // 2)
-        settings_window.geometry(f"{width}x{height}+{x}+{y}")
-        
-        # 创建设置项
-        frame = ttk.LabelFrame(settings_window, text="下载设置", padding="10")
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # 下载线程数设置
-        ttk.Label(frame, text="最大下载线程数 (1-15):").grid(row=0, column=0, padx=5, pady=5)
-        thread_var = tk.StringVar(value=str(THREAD_CONFIG['download']['max_workers']))
-        thread_entry = ttk.Entry(frame, textvariable=thread_var, width=10)
-        thread_entry.grid(row=0, column=1, padx=5, pady=5)
-        
-        def validate_and_save():
-            try:
-                new_value = int(thread_var.get())
-                if new_value <= 0:
-                    raise ValueError("线程数必须大于0")
-                if new_value > 15:  # 修改最大值限制为15
-                    raise ValueError("线程数不能超过15")
+            # 尝试两种格式匹配：
+            # 1. OTA_P3_4.4.1(11)_RPC.img
+            # 2. OTA_xxx_4.4.1(11).img
+            version_patterns = [
+                r'OTA_P3_(\d+\.\d+\.\d+\(\d+\))_RPC',  # 格式1
+                r'OTA_[^_]+_(\d+\.\d+\.\d+\(\d+\))'    # 格式2
+            ]
+            
+            for i, pattern in enumerate(version_patterns, 1):
+                logger.info(f"尝试模式{i}: {pattern}")
+                version_match = re.search(pattern, filename)
+                if version_match:
+                    version = version_match.group(1)
+                    logger.info(f"模式{i}匹配成功，提取到版本号：{version}")
+                    return version
+                else:
+                    logger.info(f"模式{i}匹配失败")
                     
-                # 更新线程池
-                self.download_executor.shutdown(wait=True)
-                self.download_executor = ThreadPoolExecutor(
-                    max_workers=new_value,
-                    thread_name_prefix='download'
-                )
+            # 如果上面的模式都失败了，尝试更宽松的匹配
+            logger.info("尝试通用模式匹配")
+            version_match = re.search(r'(\d+\.\d+\.\d+\(\d+\))', filename)
+            if version_match:
+                version = version_match.group(1)
+                logger.info(f"通用模式匹配成功，提取到版本号：{version}")
+                return version
                 
-                # 更新配置
-                THREAD_CONFIG['download']['max_workers'] = new_value
-                
-                messagebox.showinfo("成功", "设置已保存")
-                settings_window.destroy()
-                
-            except ValueError as e:
-                messagebox.showerror("错误", str(e))
-                thread_var.set(str(THREAD_CONFIG['download']['max_workers']))
-        
-        # 按钮框
-        button_frame = ttk.Frame(settings_window)
-        button_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        ttk.Button(button_frame, text="保存", command=validate_and_save).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="取消", command=settings_window.destroy).pack(side=tk.RIGHT, padx=5)
-        
-        # 设置焦点并等待
-        thread_entry.focus_set()
-        settings_window.wait_window()
+            logger.warning(f"所有模式都无法匹配文件名：{filename}")
+            return ""
+        except Exception as e:
+            logger.error(f"获取目标版本号失败：{str(e)}")
+            return ""
+            
+    def __del__(self):
+        """析构函数，确保清理所有监控线程"""
+        if hasattr(self, 'upgrade_monitor'):
+            self.upgrade_monitor.stop_all()
