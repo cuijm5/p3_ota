@@ -52,7 +52,7 @@ class UploaderGUI:
         upload_button: 上传固件按钮
         script_button: 查看OTA脚本按钮
     """
-    VERSION = "V1.0.0"  # 添加版本号常量
+    VERSION = "V1.0.1"  # 添加版本号常量
     
     def extract_version(self, filename):
         """
@@ -826,22 +826,60 @@ class UploaderGUI:
                                 
                                 # 执行升级命令
                                 logger.info(f"设备[{ip}] 开始执行升级命令")
-                                # 在后台执行升级命令
-                                tn.write(b"nohup ota_upgrade /tmp/ota.img > /dev/null 2>&1 &\n")
-                                tn.read_until(b"#", timeout=5)
-                                
-                                # 更新状态为升级中
-                                self.device_tree.item(item_id, values=(
-                                    ip,
-                                    "升级中",
-                                    version,
-                                    pid,
-                                    did,
-                                    upgrade_status
-                                ))
-                                logger.info(f"设备[{ip}] 升级命令已在后台执行")
-                                
-                                tn.close()
+                                try:
+                                    # 确保连接状态
+                                    tn.write(b"\n")
+                                    response = tn.read_until(b"#", timeout=5).decode('utf-8')
+                                    if '#' not in response:
+                                        logger.error(f"设备[{ip}] 执行升级命令前检查连接失败")
+                                        raise Exception("设备连接状态异常")
+                                    
+                                    # 在后台执行升级命令
+                                    logger.info(f"设备[{ip}] 发送升级命令")
+                                    tn.write(b"nohup ota_upgrade /tmp/ota.img > /dev/null 2>&1 &\n")
+                                    
+                                    # 等待命令响应
+                                    response = tn.read_until(b"#", timeout=5).decode('utf-8')
+                                    logger.info(f"设备[{ip}] 升级命令响应: {response}")
+                                    
+                                    if '#' not in response:
+                                        logger.error(f"设备[{ip}] 升级命令可能未执行成功")
+                                        raise Exception("升级命令执行异常")
+                                    
+                                    # 验证命令是否在运行
+                                    tn.write(b"ps | grep ota_upgrade\n")
+                                    ps_response = tn.read_until(b"#", timeout=5).decode('utf-8')
+                                    logger.info(f"设备[{ip}] 进程检查结果: {ps_response}")
+                                    
+                                    if 'ota_upgrade' not in ps_response:
+                                        logger.error(f"设备[{ip}] 未检测到升级进程")
+                                        raise Exception("升级进程未启动")
+                                    
+                                    # 更新状态为升级中
+                                    self.device_tree.item(item_id, values=(
+                                        ip,
+                                        "升级中",
+                                        version,
+                                        pid,
+                                        did,
+                                        upgrade_status
+                                    ))
+                                    logger.info(f"设备[{ip}] 升级命令已在后台执行")
+                                except Exception as e:
+                                    logger.error(f"设备[{ip}] 执行升级命令时出错: {str(e)}")
+                                    self.device_tree.item(item_id, values=(
+                                        ip,
+                                        "升级失败",
+                                        version,
+                                        pid,
+                                        did,
+                                        upgrade_status
+                                    ))
+                                finally:
+                                    try:
+                                        tn.close()
+                                    except:
+                                        pass
                             except Exception as e:
                                 error_msg = f"执行升级命令失败: {str(e)}"
                                 self.device_tree.item(item_id, values=(
