@@ -108,31 +108,23 @@ class UploaderGUI:
             )
             self.version_label.config(text="待升级版本: -")
 
-    def __init__(self, device_manager):
+    def __init__(self, device_manager, flask_app=None):
         """
         初始化GUI界面
         
         参数：
             device_manager: DeviceManager实例，用于设备管理操作
-            
-        功能：
-            1. 初始化主窗口
-            2. 加载并显示logo
-            3. 创建设备列表
-            4. 添加控制按钮
-            5. 初始化状态栏
-            6. 检查固件状态
-            
-        异常处理：
-            - 如果初始化失败会记录错误日志并抛出异常
+            flask_app: Flask服务器实例（可选）
         """
         self.device_manager = device_manager
+        self.flask_app = flask_app
         logger.info("初始化GUI界面")
         
         try:
             self.root = tk.Tk()
             self.root.title("固件上传机")
             self.root.geometry("800x600")
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # 设置窗口关闭处理函数
             
             # 加载并显示logo
             import os
@@ -470,3 +462,8 @@ class UploaderGUI:
         except Exception as e:
             logger.error(f"GUI运行异常：{str(e)}")
             raise
+
+    def on_closing(self):
+        """窗口关闭时的处理函数"""
+        logger.info("正在关闭应用程序...")
+        self.root.destroy()
