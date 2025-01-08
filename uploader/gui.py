@@ -220,7 +220,19 @@ class UploaderGUI:
             
         # 加载并显示logo
         import os
-        logo_path = os.path.join(os.path.dirname(__file__), "..", "image", "logo.png")
+        import sys
+        
+        def resource_path(relative_path):
+            """获取资源的绝对路径，支持开发环境和打包环境"""
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller创建临时文件夹，将路径存储在_MEIPASS中
+                base_path = sys._MEIPASS
+            else:
+                # 在开发环境中，使用项目根目录
+                base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            return os.path.join(base_path, relative_path)
+            
+        logo_path = resource_path(os.path.join("image", "logo.png"))
         
         if not os.path.exists(logo_path):
             # 创建默认logo
