@@ -158,15 +158,19 @@ class UploaderGUI:
             raise
         
         # 设备列表
-        self.device_tree = ttk.Treeview(self.root, columns=("ip", "status", "version", "upgrade_status"), show="headings")
+        self.device_tree = ttk.Treeview(self.root, columns=("ip", "status", "version", "pid", "did", "upgrade_status"), show="headings")
         self.device_tree.heading("ip", text="IP地址")
         self.device_tree.heading("status", text="状态")
         self.device_tree.heading("version", text="版本号")
+        self.device_tree.heading("pid", text="PID")
+        self.device_tree.heading("did", text="DID")
         self.device_tree.heading("upgrade_status", text="升级状态")
         # 设置列宽
         self.device_tree.column("ip", width=150)
         self.device_tree.column("status", width=100)
         self.device_tree.column("version", width=100)
+        self.device_tree.column("pid", width=100)
+        self.device_tree.column("did", width=150)
         self.device_tree.column("upgrade_status", width=100)
         self.device_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
@@ -279,6 +283,8 @@ class UploaderGUI:
                     device['ip'],
                     device['status'],
                     "",
+                    "",
+                    "",
                     ""
                 ))
                 logger.debug(f"添加设备：{device['ip']} - {device['status']}")
@@ -311,18 +317,36 @@ class UploaderGUI:
                         result = self.device_manager.connect(ip)
                         if result["status"] == "success":
                             device_version = result.get("version", "未知")
-                            upgrade_status = "不需要升级" if device_version == target_version else "需要升级"
+                            device_pid = result.get("pid", "未知")
+                            device_did = result.get("did", "未知")
+                            
+                            # 检查版本和PID
+                            upgrade_needed = device_version != target_version
+                            pid_matched = device_pid == "12581207"
+                            
+                            if upgrade_needed and pid_matched:
+                                upgrade_status = "需要升级"
+                            elif not upgrade_needed:
+                                upgrade_status = "不需要升级"
+                            elif not pid_matched:
+                                upgrade_status = "PID不匹配"
+                            else:
+                                upgrade_status = "-"
+                                
                             if target_version is None:
                                 upgrade_status = "-"
+                                
                             self.device_tree.item(item_id, values=(
                                 ip,
                                 "已连接",
                                 device_version,
+                                device_pid,
+                                device_did,
                                 upgrade_status
                             ))
-                            logger.info(f"设备连接成功：{ip}，版本：{device_version}，升级状态：{upgrade_status}")
+                            logger.info(f"设备连接成功：{ip}，版本：{device_version}，PID：{device_pid}，DID：{device_did}，升级状态：{upgrade_status}")
                             
-                            # 如果需要升级，启动固件下载
+                            # 只有当需要升级且PID匹配时才启动固件下载
                             if upgrade_status == "需要升级":
                                 self.start_firmware_download(ip, local_ip)
                                 
@@ -330,6 +354,8 @@ class UploaderGUI:
                             self.device_tree.item(item_id, values=(
                                 ip,
                                 result["message"],
+                                "",
+                                "",
                                 "",
                                 "-"
                             ))
@@ -339,6 +365,8 @@ class UploaderGUI:
                         self.device_tree.item(item_id, values=(
                             ip,
                             "连接异常",
+                            "",
+                            "",
                             "",
                             "-"
                         ))
@@ -375,15 +403,36 @@ class UploaderGUI:
             try:
                 result = self.device_manager.connect(ip)
                 if result["status"] == "success":
-                    self.device_tree.item(item, values=(ip, "已连接", result.get("version", "未知"), ""))
+                    self.device_tree.item(item, values=(
+                        ip, 
+                        "已连接", 
+                        result.get("version", "未知"),
+                        result.get("pid", "未知"),
+                        result.get("did", "未知"),
+                        ""
+                    ))
                     success_count += 1
                     logger.info(f"设备连接成功：{ip}")
                 else:
-                    self.device_tree.item(item, values=(ip, result["message"], "", ""))
+                    self.device_tree.item(item, values=(
+                        ip,
+                        result["message"],
+                        "",
+                        "",
+                        "",
+                        ""
+                    ))
                     logger.warning(f"设备连接失败：{ip}")
             except Exception as e:
                 logger.error(f"设备连接异常：{ip} - {str(e)}")
-                self.device_tree.item(item, values=(ip, "连接异常", "", ""))
+                self.device_tree.item(item, values=(
+                    ip,
+                    "连接异常",
+                    "",
+                    "",
+                    "",
+                    ""
+                ))
         
         logger.info(f"设备连接完成，成功连接{success_count}/{len(selected)}个设备")
                 
@@ -551,23 +600,29 @@ class UploaderGUI:
         # 在主线程中更新UI
         self.root.after(0, update)
         
-    def update_device_progress(self, ip: str, percent: int):
+    def update_device_progress(self, ip: str, percent: int, status_text: str = None):
         """
         更新设备下载进度
         
         参数：
             ip: 设备IP地址
             percent: 进度百分比
+            status_text: 状态文本（可选）
         """
         # 在主线程中更新UI
         def update():
             for item_id in self.device_tree.get_children():
                 if self.device_tree.item(item_id)['values'][0] == ip:
+                    # 保存当前的值
+                    current_values = self.device_tree.item(item_id)['values']
+                    status = status_text if status_text else f"正在下载 {percent}%"
                     self.device_tree.item(item_id, values=(
                         ip,
-                        f"正在下载 {percent}%",
-                        self.device_tree.item(item_id)['values'][2],
-                        self.device_tree.item(item_id)['values'][3]
+                        status,
+                        current_values[2],  # version
+                        current_values[3],  # pid
+                        current_values[4],  # did
+                        current_values[5]   # upgrade_status
                     ))
                     break
         
@@ -601,12 +656,21 @@ class UploaderGUI:
             for item_id in self.device_tree.get_children():
                 if self.device_tree.item(item_id)['values'][0] == ip:
                     try:
+                        # 保存当前的所有值
+                        current_values = self.device_tree.item(item_id)['values']
+                        version = current_values[2]
+                        pid = current_values[3]
+                        did = current_values[4]
+                        upgrade_status = current_values[5]
+                        
                         # 更新状态为"正在下载"
                         self.device_tree.item(item_id, values=(
                             ip,
                             "正在下载 0%",
-                            self.device_tree.item(item_id)['values'][2],
-                            self.device_tree.item(item_id)['values'][3]
+                            version,
+                            pid,
+                            did,
+                            upgrade_status
                         ))
                         
                         # 开始下载并监控进度
@@ -622,8 +686,10 @@ class UploaderGUI:
                             self.device_tree.item(item_id, values=(
                                 ip,
                                 "下载完成",
-                                self.device_tree.item(item_id)['values'][2],
-                                self.device_tree.item(item_id)['values'][3]
+                                version,
+                                pid,
+                                did,
+                                upgrade_status
                             ))
                             logger.info(f"固件下载成功：{ip}")
                         else:
@@ -632,8 +698,10 @@ class UploaderGUI:
                             self.device_tree.item(item_id, values=(
                                 ip,
                                 f"下载失败: {error_msg}",
-                                self.device_tree.item(item_id)['values'][2],
-                                self.device_tree.item(item_id)['values'][3]
+                                version,
+                                pid,
+                                did,
+                                upgrade_status
                             ))
                             logger.error(f"固件下载失败：{ip} - {error_msg}")
                     except Exception as e:
@@ -641,8 +709,10 @@ class UploaderGUI:
                         self.device_tree.item(item_id, values=(
                             ip,
                             f"下载异常: {str(e)}",
-                            self.device_tree.item(item_id)['values'][2],
-                            self.device_tree.item(item_id)['values'][3]
+                            version,
+                            pid,
+                            did,
+                            upgrade_status
                         ))
                         logger.error(f"固件下载异常：{ip} - {str(e)}")
                     break
