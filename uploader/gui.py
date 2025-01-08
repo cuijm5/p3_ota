@@ -28,6 +28,8 @@ import threading
 from PIL import Image, ImageTk, ImageFilter
 from device_manager import DeviceManager
 import urllib.parse
+import time
+import telnetlib
 
 # 配置日志模块
 # 使用当前模块名(__name__)作为日志记录器名称
@@ -50,6 +52,8 @@ class UploaderGUI:
         upload_button: 上传固件按钮
         script_button: 查看OTA脚本按钮
     """
+    VERSION = "V1.0.0"  # 添加版本号常量
+    
     def extract_version(self, filename):
         """
         从固件文件名中提取版本号
@@ -119,11 +123,13 @@ class UploaderGUI:
         """
         self.device_manager = device_manager
         self.flask_app = flask_app
+        # 添加线程锁
+        self.tree_lock = threading.Lock()
         logger.info("初始化GUI界面")
         
         try:
             self.root = tk.Tk()
-            self.root.title("固件上传机")
+            self.root.title(f"P3 OTA升级工具 {self.VERSION}")  # 修改标题
             self.root.geometry("800x600")
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # 设置窗口关闭处理函数
             
@@ -202,6 +208,10 @@ class UploaderGUI:
         status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         # 版本号显示
+        version_info = tk.Label(status_frame, text=self.VERSION, bd=1, relief=tk.SUNKEN, anchor=tk.E)
+        version_info.pack(side=tk.RIGHT, padx=5)
+        
+        # 版本号显示
         self.version_label = tk.Label(status_frame, text="待升级版本: -", bd=1, relief=tk.SUNKEN, anchor=tk.E)
         self.version_label.pack(side=tk.RIGHT, padx=5)
         
@@ -247,26 +257,83 @@ class UploaderGUI:
             logger.error(f"设备扫描线程启动失败：{str(e)}")
             self.status_var.set("扫描失败")
         
+    def ip_to_int(self, ip: str) -> int:
+        """将IP地址转换为整数以便正确排序"""
+        try:
+            parts = list(map(int, ip.split('.')))
+            return (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+        except:
+            return 0
+
+    def insert_device_sorted(self, device_info):
+        """
+        将设备按排序规则插入到正确的位置
+        
+        参数：
+            device_info: 设备信息字典
+        """
+        def get_sort_key(status, upgrade_status):
+            """获取排序键"""
+            if status == "已连接":
+                if upgrade_status == "需要升级":
+                    return 0
+                elif upgrade_status == "不需要升级":
+                    return 1
+                elif upgrade_status == "PID不匹配":
+                    return 2
+                else:
+                    return 3
+            elif status == "连接异常" or "失败" in status:
+                return 4
+            return 5  # 默认最低优先级（离线设备）
+            
+        with self.tree_lock:  # 使用线程锁保护设备列表操作
+            # 获取所有设备并排序
+            devices = []
+            # 先收集现有设备
+            for item_id in self.device_tree.get_children():
+                values = self.device_tree.item(item_id)['values']
+                # 跳过同IP的旧条目
+                if values[0] == device_info['ip']:
+                    continue
+                    
+                sort_key = get_sort_key(values[1], values[5])
+                devices.append({
+                    'sort_key': sort_key,
+                    'ip': values[0],
+                    'ip_int': self.ip_to_int(values[0]),
+                    'values': values
+                })
+            
+            # 添加新设备
+            devices.append({
+                'sort_key': device_info['sort_key'],
+                'ip': device_info['ip'],
+                'ip_int': self.ip_to_int(device_info['ip']),
+                'values': (
+                    device_info['ip'],
+                    device_info['status'],
+                    device_info['version'],
+                    device_info['pid'],
+                    device_info['did'],
+                    device_info['upgrade_status']
+                )
+            })
+            
+            # 稳定排序：先按优先级，再按IP数值大小
+            devices.sort(key=lambda x: (x['sort_key'], x['ip_int']))
+            
+            # 清空树形列表并重新插入
+            self.device_tree.delete(*self.device_tree.get_children())
+            for device in devices:
+                self.device_tree.insert("", tk.END, values=device['values'])
+
     def scan_devices(self):
         """
-        扫描网络中的设备并更新设备列表，然后自动连接在线设备
-        
-        功能：
-            1. 调用device_manager的scan_network方法扫描设备
-            2. 清空当前设备列表
-            3. 将扫描到的设备添加到设备树中
-            4. 更新状态栏显示扫描结果
-            5. 自动连接所有在线设备
-            6. 比对设备版本与待升级版本
-            
-        异常处理：
-            - 如果扫描失败会记录错误日志并更新状态栏
+        扫描网络中的设备并更新设备列表
         """
         logger.info("开始扫描设备")
         try:
-            devices = self.device_manager.scan_network()
-            logger.info(f"扫描到{len(devices)}个设备")
-            
             # 获取待升级版本
             import os
             firmware_dir = '../firmware'
@@ -276,103 +343,150 @@ class UploaderGUI:
                 if img_files:
                     target_version = self.extract_version(img_files[0])
             
+            # 获取本机IP
+            try:
+                import socket
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('8.8.8.8', 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except Exception as e:
+                logger.error(f"获取本机IP失败: {str(e)}")
+                local_ip = None
+            
+            # 清空当前列表
             self.device_tree.delete(*self.device_tree.get_children())
-            online_devices = []
+            
+            # 开始扫描设备
+            devices = self.device_manager.scan_network()
+            logger.info(f"扫描到{len(devices)}个设备")
+            
+            # 立即显示所有发现的设备（离线状态）
             for device in devices:
-                item_id = self.device_tree.insert("", tk.END, values=(
-                    device['ip'],
-                    device['status'],
-                    "",
-                    "",
-                    "",
-                    ""
-                ))
-                logger.debug(f"添加设备：{device['ip']} - {device['status']}")
-                if device['status'] == '在线':
-                    online_devices.append(item_id)
+                device_info = {
+                    'ip': device['ip'],
+                    'status': device['status'],
+                    'version': "",
+                    'pid': "",
+                    'did': "",
+                    'upgrade_status': "",
+                    'sort_key': 5  # 默认为离线设备优先级
+                }
+                self.insert_device_sorted(device_info)
                 
+                # 如果设备在线，启动连接线程
+                if device['status'] == '在线' and local_ip:
+                    threading.Thread(
+                        target=self.connect_and_update_device,
+                        args=(device['ip'], local_ip, target_version)
+                    ).start()
+            
             self.status_var.set(f"发现 {len(devices)} 个设备")
             logger.info("设备列表更新完成")
-
-            # 自动连接在线设备并比对版本
-            if online_devices:
-                logger.info(f"开始自动连接{len(online_devices)}个在线设备")
-                self.device_tree.selection_set(online_devices)
-                
-                # 获取本机IP
-                try:
-                    import socket
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    s.connect(('8.8.8.8', 80))
-                    local_ip = s.getsockname()[0]
-                    s.close()
-                except Exception as e:
-                    logger.error(f"获取本机IP失败: {str(e)}")
-                    return
-                
-                # 连接设备并获取版本信息
-                for item_id in online_devices:
-                    ip = self.device_tree.item(item_id)['values'][0]
-                    try:
-                        result = self.device_manager.connect(ip)
-                        if result["status"] == "success":
-                            device_version = result.get("version", "未知")
-                            device_pid = result.get("pid", "未知")
-                            device_did = result.get("did", "未知")
-                            
-                            # 检查版本和PID
-                            upgrade_needed = device_version != target_version
-                            pid_matched = device_pid == "12581207"
-                            
-                            if upgrade_needed and pid_matched:
-                                upgrade_status = "需要升级"
-                            elif not upgrade_needed:
-                                upgrade_status = "不需要升级"
-                            elif not pid_matched:
-                                upgrade_status = "PID不匹配"
-                            else:
-                                upgrade_status = "-"
-                                
-                            if target_version is None:
-                                upgrade_status = "-"
-                                
-                            self.device_tree.item(item_id, values=(
-                                ip,
-                                "已连接",
-                                device_version,
-                                device_pid,
-                                device_did,
-                                upgrade_status
-                            ))
-                            logger.info(f"设备连接成功：{ip}，版本：{device_version}，PID：{device_pid}，DID：{device_did}，升级状态：{upgrade_status}")
-                            
-                            # 只有当需要升级且PID匹配时才启动固件下载
-                            if upgrade_status == "需要升级":
-                                self.start_firmware_download(ip, local_ip)
-                                
-                        else:
-                            self.device_tree.item(item_id, values=(
-                                ip,
-                                result["message"],
-                                "",
-                                "",
-                                "",
-                                "-"
-                            ))
-                            logger.warning(f"设备连接失败：{ip}")
-                    except Exception as e:
-                        logger.error(f"设备连接异常：{ip} - {str(e)}")
-                        self.device_tree.item(item_id, values=(
-                            ip,
-                            "连接异常",
-                            "",
-                            "",
-                            "",
-                            "-"
-                        ))
+            
         except Exception as e:
             logger.error(f"设备扫描失败：{str(e)}")
             self.status_var.set("扫描失败")
+            
+    def connect_and_update_device(self, ip: str, local_ip: str, target_version: str):
+        """
+        连接设备并更新其状态
+        
+        参数：
+            ip: 设备IP地址
+            local_ip: 本地IP地址
+            target_version: 目标版本号
+        """
+        max_retries = 3  # 最大重试次数
+        retry_count = 0
+        last_error = None
+        
+        while retry_count < max_retries:
+            try:
+                if retry_count > 0:
+                    logger.info(f"设备[{ip}] 第{retry_count + 1}次尝试连接")
+                    # 更新状态显示重试次数
+                    device_info = {
+                        'ip': ip,
+                        'status': f"正在重试({retry_count + 1}/{max_retries})",
+                        'version': "",
+                        'pid': "",
+                        'did': "",
+                        'upgrade_status': "",
+                        'sort_key': 4
+                    }
+                    self.insert_device_sorted(device_info)
+                    time.sleep(2)  # 等待2秒后重试
+                
+                result = self.device_manager.connect(ip)
+                if result["status"] == "success":
+                    device_info = {
+                        'ip': ip,
+                        'status': "已连接",
+                        'version': result.get("version", "未知"),
+                        'pid': result.get("pid", "未知"),
+                        'did': result.get("did", "未知"),
+                        'upgrade_status': "",
+                        'sort_key': 3
+                    }
+                    
+                    # 检查版本和PID
+                    upgrade_needed = device_info['version'] != target_version
+                    pid_matched = device_info['pid'] == "12581207"
+                    
+                    if upgrade_needed and pid_matched:
+                        device_info['upgrade_status'] = "需要升级"
+                        device_info['sort_key'] = 0
+                    elif not upgrade_needed:
+                        device_info['upgrade_status'] = "不需要升级"
+                        device_info['sort_key'] = 1
+                    elif not pid_matched:
+                        device_info['upgrade_status'] = "PID不匹配"
+                        device_info['sort_key'] = 2
+                    
+                    if target_version is None:
+                        device_info['upgrade_status'] = "-"
+                        device_info['sort_key'] = 3
+                    
+                    self.insert_device_sorted(device_info)
+                    logger.info(f"设备连接成功：{ip}，版本：{device_info['version']}，PID：{device_info['pid']}，DID：{device_info['did']}，升级状态：{device_info['upgrade_status']}")
+                    
+                    # 如果需要升级且PID匹配，启动固件下载
+                    if device_info['upgrade_status'] == "需要升级":
+                        self.start_firmware_download(ip, local_ip)
+                    
+                    return  # 连接成功，直接返回
+                else:
+                    last_error = result["message"]
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        device_info = {
+                            'ip': ip,
+                            'status': result["message"],
+                            'version': "",
+                            'pid': "",
+                            'did': "",
+                            'upgrade_status': "",
+                            'sort_key': 4
+                        }
+                        self.insert_device_sorted(device_info)
+                        logger.warning(f"设备连接失败（重试{max_retries}次）：{ip}")
+                    
+            except Exception as e:
+                last_error = str(e)
+                retry_count += 1
+                if retry_count >= max_retries:
+                    logger.error(f"设备连接异常（重试{max_retries}次）：{ip} - {str(e)}")
+                    device_info = {
+                        'ip': ip,
+                        'status': "连接异常",
+                        'version': "",
+                        'pid': "",
+                        'did': "",
+                        'upgrade_status': "",
+                        'sort_key': 4
+                    }
+                    self.insert_device_sorted(device_info)
         
     def connect_devices(self):
         """
@@ -562,7 +676,7 @@ class UploaderGUI:
             
         if self.flask_app and self.flask_app.thread and self.flask_app.thread.is_alive():
             self.http_status.config(
-                text=f"HTTP服务: 运行中 ({self.flask_app.host}:{self.flask_app.port})",
+                text=f"HTTP服务: 运行中 (端口:5000)",
                 fg="green",
                 font=("Arial", 10, "bold")
             )
@@ -692,6 +806,53 @@ class UploaderGUI:
                                 upgrade_status
                             ))
                             logger.info(f"固件下载成功：{ip}")
+                            
+                            # 等待3秒后执行升级命令
+                            time.sleep(3)
+                            try:
+                                # 连接设备
+                                tn = telnetlib.Telnet(ip, timeout=5)
+                                
+                                # 登录认证
+                                tn.read_until(b"login: ", timeout=5)
+                                tn.write(b"root\n")
+                                tn.read_until(b"Password: ", timeout=5)
+                                tn.write(b"123456\n")
+                                
+                                # 验证登录成功
+                                index, _, _ = tn.expect([b"Login incorrect", b"#"], timeout=5)
+                                if index == 0:
+                                    raise Exception("设备登录失败")
+                                
+                                # 执行升级命令
+                                logger.info(f"设备[{ip}] 开始执行升级命令")
+                                # 在后台执行升级命令
+                                tn.write(b"nohup ota_upgrade /tmp/ota.img > /dev/null 2>&1 &\n")
+                                tn.read_until(b"#", timeout=5)
+                                
+                                # 更新状态为升级中
+                                self.device_tree.item(item_id, values=(
+                                    ip,
+                                    "升级中",
+                                    version,
+                                    pid,
+                                    did,
+                                    upgrade_status
+                                ))
+                                logger.info(f"设备[{ip}] 升级命令已在后台执行")
+                                
+                                tn.close()
+                            except Exception as e:
+                                error_msg = f"执行升级命令失败: {str(e)}"
+                                self.device_tree.item(item_id, values=(
+                                    ip,
+                                    error_msg,
+                                    version,
+                                    pid,
+                                    did,
+                                    upgrade_status
+                                ))
+                                logger.error(f"设备[{ip}] {error_msg}")
                         else:
                             # 下载失败
                             error_msg = result.get("message", "未知错误")
