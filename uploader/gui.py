@@ -32,6 +32,7 @@ import urllib.parse
 import time
 import telnetlib
 import os
+import sys
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
@@ -106,6 +107,16 @@ def setup_logging():
 
 # 配置日志
 logger = setup_logging()
+
+def resource_path(relative_path):
+    """获取资源的绝对路径，支持开发环境和打包环境"""
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller创建临时文件夹，将路径存储在_MEIPASS中
+        base_path = sys._MEIPASS
+    else:
+        # 在开发环境中，使用项目根目录
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 class UploaderGUI:
     """
@@ -210,28 +221,18 @@ class UploaderGUI:
         
         # 设置窗口图标
         try:
-            icon_path = os.path.join(os.path.dirname(__file__), "logo.ico")
+            icon_path = resource_path(os.path.join("image", "app_logo.ico"))
             if os.path.exists(icon_path):
                 self.root.iconbitmap(icon_path)
+                logger.info(f"已加载窗口图标：{icon_path}")
+            else:
+                logger.warning(f"未找到窗口图标文件：{icon_path}")
         except Exception as e:
-            logger.warning(f"加载图标失败：{str(e)}")
+            logger.warning(f"加载窗口图标失败：{str(e)}")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # 设置窗口关闭处理函数
             
         # 加载并显示logo
-        import os
-        import sys
-        
-        def resource_path(relative_path):
-            """获取资源的绝对路径，支持开发环境和打包环境"""
-            if hasattr(sys, '_MEIPASS'):
-                # PyInstaller创建临时文件夹，将路径存储在_MEIPASS中
-                base_path = sys._MEIPASS
-            else:
-                # 在开发环境中，使用项目根目录
-                base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            return os.path.join(base_path, relative_path)
-            
         logo_path = resource_path(os.path.join("image", "logo.png"))
         
         if not os.path.exists(logo_path):

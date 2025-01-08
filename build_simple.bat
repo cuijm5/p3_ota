@@ -7,6 +7,7 @@ cd uploader
 pyinstaller --clean ^
     --noconsole ^
     --add-data "../image;image" ^
+    --icon="../image/app_logo.ico" ^
     --name="P3_OTA_Updater" ^
     app.py
 
