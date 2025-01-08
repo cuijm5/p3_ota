@@ -6,23 +6,90 @@
 """
 
 import logging
+from logging.handlers import RotatingFileHandler
 import socket
 import telnetlib
 import threading
 import re
 from typing import List, Dict, Callable
 import time
+import os
+
+def setup_logging():
+    """配置日志系统"""
+    # 获取根日志记录器并设置级别
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)  # 将全局日志级别设为INFO
+    
+    # 获取模块日志记录器
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)  # 将模块日志级别设为INFO
+    
+    # 移除所有已存在的处理器
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # 获取uploader目录的路径
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 如果日志文件已存在且大于1MB，则删除它和它的备份文件
+    log_file = os.path.join(current_dir, 'scan_debug.log')
+    backup_file = os.path.join(current_dir, 'scan_debug.log.1')
+    
+    try:
+        if os.path.exists(log_file):
+            if os.path.getsize(log_file) > 1024*1024:  # 改为1MB
+                os.remove(log_file)
+                print(f"已删除过大的日志文件: {log_file}")
+        if os.path.exists(backup_file):
+            if os.path.getsize(backup_file) > 1024*1024:  # 改为1MB
+                os.remove(backup_file)
+                print(f"已删除过大的备份文件: {backup_file}")
+    except Exception as e:
+        print(f"清理日志文件时出错: {e}")
+    
+    # 创建RotatingFileHandler，限制文件大小为1MB
+    try:
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=1024*1024,  # 改为1MB
+            backupCount=1,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(logging.INFO)  # 将文件日志级别设为INFO
+        
+        # 使用更简洁的日志格式
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+        file_handler.setFormatter(formatter)
+        
+        # 添加过滤器，过滤掉一些不必要的DEBUG日志
+        class LogFilter(logging.Filter):
+            def filter(self, record):
+                # 过滤掉一些频繁的DEBUG日志
+                if record.levelno == logging.DEBUG:
+                    msg = record.getMessage()
+                    if "正在扫描IP" in msg or "设备详细信息" in msg:
+                        return False
+                return True
+        
+        file_handler.addFilter(LogFilter())
+        logger.addHandler(file_handler)
+        
+        # 同时将日志输出到控制台
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+        
+    except Exception as e:
+        print(f"设置日志处理器时出错: {e}")
+    
+    return logger
 
 # 配置日志
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# 创建文件日志处理器
-file_handler = logging.FileHandler('scan_debug.log')
-file_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+logger = setup_logging()
 
 class DeviceManager:
     """
