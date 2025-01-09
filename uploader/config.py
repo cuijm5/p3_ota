@@ -38,7 +38,12 @@ DEVICE_CONFIG = {
     'pid_whitelist': ['12581207'],  # 支持升级的PID列表
     'scan_timeout': 2,  # 扫描超时时间（秒）
     'max_retries': 3,  # 最大重试次数
-    'retry_interval': 3  # 重试间隔（秒）
+    'retry_interval': 3,  # 重试间隔（秒）
+    'network': {
+        'subnet_mask': 24,  # 默认子网掩码位数
+        'min_mask': 16,     # 最小允许的掩码位数
+        'max_mask': 30      # 最大允许的掩码位数
+    }
 }
 
 # 线程配置

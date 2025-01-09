@@ -36,7 +36,7 @@ import sys
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
-from config import THREAD_CONFIG, GUI_CONFIG, VERSION
+from config import THREAD_CONFIG, GUI_CONFIG, VERSION, DEVICE_CONFIG
 from upgrade_monitor import UpgradeMonitor
 
 # 定义下载状态常量
@@ -312,6 +312,34 @@ class UploaderGUI:
         control_frame = tk.Frame(self.root)
         control_frame.pack(fill=tk.X, padx=10, pady=5)
         
+        # 添加子网掩码设置
+        mask_frame = tk.Frame(control_frame)
+        mask_frame.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(mask_frame, text="子网掩码位数:").pack(side=tk.LEFT)
+        self.mask_var = tk.StringVar(value=str(self.device_manager.subnet_mask))
+        mask_values = list(range(DEVICE_CONFIG['network']['min_mask'], 
+                               DEVICE_CONFIG['network']['max_mask'] + 1))
+        self.mask_combo = ttk.Combobox(mask_frame, 
+                                     textvariable=self.mask_var,
+                                     values=mask_values,
+                                     width=3,
+                                     state="readonly")
+        self.mask_combo.pack(side=tk.LEFT)
+        
+        # 绑定选择事件
+        def on_mask_select(event):
+            try:
+                new_mask = int(self.mask_var.get())
+                if self.device_manager.set_subnet_mask(new_mask):
+                    self.status_var.set(f"子网掩码已设置为 /{new_mask}")
+                else:
+                    self.status_var.set("子网掩码设置失败")
+            except ValueError:
+                self.status_var.set("无效的子网掩码值")
+                
+        self.mask_combo.bind('<<ComboboxSelected>>', on_mask_select)
+
         self.scan_button = tk.Button(control_frame, text="扫描设备", command=self.start_scan)
         self.scan_button.pack(side=tk.LEFT, padx=5)
         

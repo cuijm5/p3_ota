@@ -14,6 +14,8 @@ import re
 from typing import List, Dict, Callable
 import time
 import os
+import ipaddress
+from config import DEVICE_CONFIG
 
 def setup_logging():
     """配置日志系统"""
@@ -98,6 +100,7 @@ class DeviceManager:
     属性：
         devices: 当前发现的设备列表
         lock: 线程安全锁
+        subnet_mask: 当前使用的子网掩码位数
     """
     def __init__(self):
         """
@@ -105,8 +108,50 @@ class DeviceManager:
         """
         self.devices = []
         self.lock = threading.Lock()
+        self.subnet_mask = DEVICE_CONFIG['network']['subnet_mask']
         logger.info("设备管理器初始化完成")
         
+    def set_subnet_mask(self, mask: int) -> bool:
+        """
+        设置子网掩码位数
+        
+        参数：
+            mask: 子网掩码位数（16-30）
+            
+        返回：
+            bool: 设置是否成功
+        """
+        if not (DEVICE_CONFIG['network']['min_mask'] <= mask <= DEVICE_CONFIG['network']['max_mask']):
+            logger.error(f"子网掩码位数无效：{mask}，必须在{DEVICE_CONFIG['network']['min_mask']}-{DEVICE_CONFIG['network']['max_mask']}之间")
+            return False
+        
+        self.subnet_mask = mask
+        logger.info(f"子网掩码位数已设置为：{mask}")
+        return True
+
+    def get_ip_range(self, base_ip: str) -> tuple:
+        """
+        根据基础IP和掩码位计算IP范围
+        
+        参数：
+            base_ip: 基础IP地址
+            
+        返回：
+            tuple: (起始IP, 结束IP)
+        """
+        try:
+            # 创建网络对象
+            network = ipaddress.ip_network(f"{base_ip}/{self.subnet_mask}", strict=False)
+            # 获取网络中的第一个和最后一个IP（排除网络地址和广播地址）
+            start_ip = network.network_address + 1
+            end_ip = network.broadcast_address - 1
+            
+            logger.info(f"计算IP范围：网段 {network}，起始IP {start_ip}，结束IP {end_ip}")
+            return str(start_ip), str(end_ip)
+        except Exception as e:
+            logger.error(f"计算IP范围失败：{str(e)}")
+            return None, None
+
     def scan_network(self) -> List[Dict]:
         """
         扫描局域网内的设备
@@ -120,9 +165,13 @@ class DeviceManager:
             logger.warning("无法获取本地IP地址")
             return []
             
-        network_prefix = '.'.join(base_ip.split('.')[:3])
+        # 获取要扫描的IP范围
+        start_ip, end_ip = self.get_ip_range(base_ip)
+        if not start_ip or not end_ip:
+            return []
+            
         devices = []
-        logger.info(f"扫描网络范围：{network_prefix}.1-255")
+        logger.info(f"扫描网络范围：{start_ip} - {end_ip}")
         
         # 使用线程池并发扫描
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -140,12 +189,15 @@ class DeviceManager:
                 return device_info
             return None
             
+        # 创建IP地址列表
+        ip_list = [str(ip) for ip in ipaddress.ip_network(f"{base_ip}/{self.subnet_mask}", strict=False).hosts()]
+        
         # 创建线程池，最大并发数100
         with ThreadPoolExecutor(max_workers=100) as executor:
             # 提交所有扫描任务
             futures = {
-                executor.submit(scan_single_ip, f"{network_prefix}.{i}"): i
-                for i in range(1, 256)
+                executor.submit(scan_single_ip, str(ip)): ip
+                for ip in ip_list
             }
             
             # 显示进度
@@ -159,7 +211,7 @@ class DeviceManager:
                 result = future.result()
                 if result:
                     devices.append(result)
-        
+                    
         with self.lock:
             self.devices = devices
         logger.info(f"扫描完成，共发现{len(devices)}个设备")
