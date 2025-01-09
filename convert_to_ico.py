@@ -26,7 +26,7 @@ def convert_to_ico(png_path, ico_path):
 
 if __name__ == '__main__':
     # 转换图片
-    png_path = 'image/logo.png'
+    png_path = 'image/app_logo.png'
     ico_path = 'image/app_logo.ico'
     
     if not os.path.exists(png_path):

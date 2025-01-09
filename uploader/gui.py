@@ -205,6 +205,8 @@ class UploaderGUI:
         self.device_manager = device_manager
         self.flask_app = flask_app
         self.tree_lock = threading.Lock()
+        self.monitor_count = 0  # 添加监控计数器
+        self.scanning_in_progress = False  # 添加扫描流程状态标志
         
         # 创建主窗口
         self.root = tk.Tk()
@@ -333,6 +335,10 @@ class UploaderGUI:
         status_bar = tk.Label(status_frame, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
+        # 监控计数显示
+        self.monitor_label = tk.Label(status_frame, text="升级中: 0", bd=1, relief=tk.SUNKEN, anchor=tk.E)
+        self.monitor_label.pack(side=tk.RIGHT, padx=5)
+        
         # 版本号显示
         self.version_label = tk.Label(status_frame, text="待升级版本: -", bd=1, relief=tk.SUNKEN, anchor=tk.E)
         self.version_label.pack(side=tk.RIGHT, padx=5)
@@ -369,23 +375,22 @@ class UploaderGUI:
     def start_scan(self):
         """
         启动设备扫描线程
-        
-        功能：
-            - 更新状态栏显示
-            - 启动后台线程执行scan_devices方法
-            - 记录扫描开始日志
-            
-        异常处理：
-            - 如果线程启动失败会记录错误日志并更新状态栏
         """
+        # 检查是否正在进行扫描和升级流程
+        if self.scanning_in_progress:
+            messagebox.showwarning("警告", "当前正在进行扫描和升级流程，请等待所有设备升级监控结束后再进行扫描")
+            return
+            
         logger.info("启动设备扫描")
         self.status_var.set("正在扫描设备...")
         try:
+            self.scanning_in_progress = True  # 设置扫描流程开始
             threading.Thread(target=self.scan_devices).start()
             logger.info("设备扫描线程启动成功")
         except Exception as e:
             logger.error(f"设备扫描线程启动失败：{str(e)}")
             self.status_var.set("扫描失败")
+            self.scanning_in_progress = False  # 扫描失败时重置状态
         
     def ip_to_int(self, ip: str) -> int:
         """将IP地址转换为整数以便正确排序"""
@@ -438,13 +443,18 @@ class UploaderGUI:
             local_ip = self.device_manager.get_local_ip()
             if not local_ip:
                 self.status_var.set("获取本机IP失败")
+                self.scanning_in_progress = False  # 重置扫描状态
                 return
                 
             # 扫描设备
             devices = self.device_manager.scan_network()
             if not devices:
                 self.status_var.set("未发现设备")
+                self.scanning_in_progress = False  # 重置扫描状态
                 return
+                
+            # 用于跟踪是否有需要升级的设备
+            has_upgrade_devices = False
                 
             # 更新设备列表
             for device in devices:
@@ -465,6 +475,7 @@ class UploaderGUI:
                     )
                     
                     if needs_upgrade:
+                        has_upgrade_devices = True  # 标记有需要升级的设备
                         # 需要升级的设备
                         self.insert_device_sorted({
                             'ip': device['ip'],
@@ -506,9 +517,15 @@ class UploaderGUI:
             # 更新状态栏，只显示发现的设备数量
             self.status_var.set(f"发现 {len(devices)} 个设备")
             
+            # 如果没有需要升级的设备，重置扫描状态
+            if not has_upgrade_devices:
+                self.scanning_in_progress = False
+                logger.info("扫描完成，没有发现需要升级的设备")
+            
         except Exception as e:
             logger.error(f"扫描设备时出错：{str(e)}")
             self.status_var.set("扫描失败")
+            self.scanning_in_progress = False  # 出错时重置扫描状态
             
     def connect_and_update_device(self, ip: str, local_ip: str, target_version: str):
         """
@@ -877,10 +894,6 @@ class UploaderGUI:
     def start_firmware_download(self, ip: str, local_ip: str):
         """
         启动固件下载线程
-        
-        参数：
-            ip: 目标设备IP地址
-            local_ip: 本机IP地址
         """
         logger.info(f"============= 开始固件下载流程 [{ip}] =============")
         
@@ -1012,6 +1025,9 @@ class UploaderGUI:
                                     logger.info(f"[{ip}] 目标版本号: {target_version}")
                                     if target_version:
                                         logger.info(f"[{ip}] 启动升级监控")
+                                        with self.tree_lock:
+                                            self.monitor_count += 1  # 增加监控计数
+                                            self.monitor_label.config(text=f"升级中: {self.monitor_count}")  # 更新显示
                                         self.upgrade_monitor.start_monitor(
                                             ip,
                                             target_version,
@@ -1079,12 +1095,6 @@ class UploaderGUI:
     def update_device_status(self, ip: str, status: str, color: str = "black", device_info: dict = None):
         """
         更新设备状态和信息
-        
-        参数：
-            ip: 设备IP地址
-            status: 状态文本
-            color: 状态颜色
-            device_info: 可选的设备信息字典，包含version、pid、did等信息
         """
         def update():
             with self.tree_lock:
@@ -1092,6 +1102,18 @@ class UploaderGUI:
                     values = list(self.device_tree.item(item_id)['values'])
                     if values[0] == ip:
                         values[1] = status  # 更新状态
+                        
+                        # 如果设备升级完成、失败或超时，减少监控计数
+                        if status in ["升级成功", "升级失败", "升级超时"]:
+                            self.monitor_count -= 1
+                            self.monitor_label.config(text=f"升级中: {self.monitor_count}")  # 更新显示
+                            logger.info(f"设备[{ip}]升级{status}，剩余监控数量：{self.monitor_count}")
+                            # 如果所有监控都结束，重置扫描状态
+                            if self.monitor_count <= 0:
+                                self.monitor_count = 0
+                                self.monitor_label.config(text="升级中: 0")  # 更新显示为0
+                                self.scanning_in_progress = False
+                                logger.info("所有设备升级监控已结束，可以开始新的扫描")
                         
                         # 如果提供了设备信息，更新相应字段
                         if device_info:
