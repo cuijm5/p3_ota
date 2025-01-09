@@ -334,10 +334,6 @@ class UploaderGUI:
         status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         # 版本号显示
-        version_info = tk.Label(status_frame, text=VERSION, bd=1, relief=tk.SUNKEN, anchor=tk.E)
-        version_info.pack(side=tk.RIGHT, padx=5)
-        
-        # 版本号显示
         self.version_label = tk.Label(status_frame, text="待升级版本: -", bd=1, relief=tk.SUNKEN, anchor=tk.E)
         self.version_label.pack(side=tk.RIGHT, padx=5)
         
