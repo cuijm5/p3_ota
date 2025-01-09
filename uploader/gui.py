@@ -329,6 +329,13 @@ class UploaderGUI:
         
         # 绑定选择事件
         def on_mask_select(event):
+            # 检查是否正在扫描
+            if self.scanning_in_progress:
+                messagebox.showwarning("警告", "正在扫描和升级设备，请等待完成后再修改掩码")
+                # 恢复原来的值
+                self.mask_var.set(str(self.device_manager.subnet_mask))
+                return
+                
             try:
                 new_mask = int(self.mask_var.get())
                 if self.device_manager.set_subnet_mask(new_mask):
@@ -738,6 +745,11 @@ class UploaderGUI:
             - 如果未选择文件会记录警告日志
             - 拷贝过程中发生错误会弹出错误框并记录错误日志
         """
+        # 检查是否正在扫描
+        if self.scanning_in_progress:
+            messagebox.showwarning("警告", "正在扫描和升级设备，请等待完成后再上传固件")
+            return
+            
         logger.info("尝试上传固件")
         
         # 选择固件文件
