@@ -467,6 +467,12 @@ class UploaderGUI:
     def scan_devices(self):
         """扫描并连接设备"""
         try:
+            # 清空设备列表
+            with self.tree_lock:
+                for item in self.device_tree.get_children():
+                    self.device_tree.delete(item)
+            logger.info("已清空设备列表")
+            
             # 获取本机IP
             local_ip = self.device_manager.get_local_ip()
             if not local_ip:
