@@ -435,6 +435,19 @@ class UploaderGUI:
             messagebox.showwarning("警告", "当前正在进行扫描和升级流程，请等待所有设备升级监控结束后再进行扫描")
             return
             
+        # 检查固件文件夹中是否存在.img文件
+        firmware_dir = '../firmware'
+        if not os.path.exists(firmware_dir):
+            os.makedirs(firmware_dir)
+        img_files = [f for f in os.listdir(firmware_dir) if f.endswith('.img')]
+        if not img_files:
+            messagebox.showwarning("警告", "请先上传固件")
+            return
+            
+        # 添加确认对话框
+        if not messagebox.askyesno("提示", "点击扫描设备会把扫描出来的所有设备升级至目标版本，请谨慎操作"):
+            return
+            
         logger.info("启动设备扫描")
         self.status_var.set("正在扫描设备...")
         try:
