@@ -152,10 +152,13 @@ class DeviceManager:
             logger.error(f"计算IP范围失败：{str(e)}")
             return None, None
 
-    def scan_network(self) -> List[Dict]:
+    def scan_network(self, progress_callback=None) -> List[Dict]:
         """
         扫描局域网内的设备
         
+        参数：
+            progress_callback: 进度回调函数，接收completed和total两个参数
+            
         返回：
             List[Dict]: 发现的设备列表，每个设备包含ip和status字段
         """
@@ -207,6 +210,8 @@ class DeviceManager:
                 completed += 1
                 if completed % 10 == 0 or completed == total:
                     logger.info(f"扫描进度：{completed}/{total} ({completed/total*100:.1f}%)")
+                    if progress_callback:
+                        progress_callback(completed, total)
                 
                 result = future.result()
                 if result:
