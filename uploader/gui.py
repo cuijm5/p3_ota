@@ -279,6 +279,25 @@ class UploaderGUI:
         
         logger.info("主窗口创建成功")
         
+        # 添加扫描进度条框架
+        self.scan_progress_frame = tk.Frame(self.root)
+        self.scan_progress_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # 添加扫描进度标签
+        self.scan_progress_label = tk.Label(self.scan_progress_frame, text="扫描进度：", anchor="w")
+        self.scan_progress_label.pack(side=tk.LEFT, padx=5)
+        
+        # 添加扫描进度条
+        self.scan_progress_bar = ttk.Progressbar(self.scan_progress_frame, length=300, mode='determinate')
+        self.scan_progress_bar.pack(side=tk.LEFT, padx=5)
+        
+        # 添加扫描进度百分比标签
+        self.scan_percent_label = tk.Label(self.scan_progress_frame, text="0%", width=8, anchor="w")
+        self.scan_percent_label.pack(side=tk.LEFT)
+        
+        # 默认隐藏扫描进度框架
+        self.scan_progress_frame.pack_forget()
+        
         # 设备列表
         self.device_tree = ttk.Treeview(
             self.root,
@@ -488,7 +507,11 @@ class UploaderGUI:
                 return
                 
             # 扫描设备
-            devices = self.device_manager.scan_network()
+            devices = []
+            def progress_callback(completed, total):
+                self.update_scan_progress(completed, total)
+                
+            devices = self.device_manager.scan_network(progress_callback)
             if not devices:
                 self.status_var.set("未发现设备")
                 self.scanning_in_progress = False  # 重置扫描状态
@@ -1230,3 +1253,25 @@ class UploaderGUI:
         """析构函数，确保清理所有监控线程"""
         if hasattr(self, 'upgrade_monitor'):
             self.upgrade_monitor.stop_all()
+
+    def update_scan_progress(self, completed: int, total: int):
+        """更新扫描进度显示"""
+        def update():
+            # 确保进度条可见
+            self.scan_progress_frame.pack(fill=tk.X, padx=10, pady=5)
+            
+            # 计算进度百分比
+            percent = int(completed / total * 100)
+            
+            # 更新进度条
+            self.scan_progress_bar['value'] = percent
+            
+            # 更新百分比标签
+            self.scan_percent_label.config(text=f"{percent}%")
+            
+            # 如果扫描完成，延时隐藏进度条
+            if completed >= total:
+                self.root.after(3000, lambda: self.scan_progress_frame.pack_forget())
+                
+        # 在主线程中更新UI
+        self.root.after(0, update)
