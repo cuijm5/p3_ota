@@ -42,7 +42,7 @@ DEVICE_CONFIG = {
     'network': {
         'subnet_mask': 24,  # 默认子网掩码位数
         'min_mask': 16,     # 最小允许的掩码位数
-        'max_mask': 30      # 最大允许的掩码位数
+        'max_mask': 24      # 最大允许的掩码位数
     }
 }
 
