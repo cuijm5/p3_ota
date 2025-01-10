@@ -152,18 +152,21 @@ class DeviceManager:
             logger.error(f"计算IP范围失败：{str(e)}")
             return None, None
 
-    def scan_network(self, progress_callback=None) -> List[Dict]:
+    def scan_network(self, progress_callback=None, local_ip=None) -> List[Dict]:
         """
         扫描局域网内的设备
         
         参数：
             progress_callback: 进度回调函数，接收completed和total两个参数
+            local_ip: 本机IP地址，如果不提供则自动获取
             
         返回：
             List[Dict]: 发现的设备列表，每个设备包含ip和status字段
         """
         logger.info("开始扫描网络设备")
-        base_ip = self.get_local_ip()
+        
+        # 如果没有提供local_ip，尝试自动获取
+        base_ip = local_ip if local_ip else self.get_local_ip()
         if not base_ip:
             logger.warning("无法获取本地IP地址")
             return []
@@ -240,6 +243,213 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"获取本地IP地址失败：{str(e)}")
             return ""
+            
+    def get_all_network_ips(self) -> List[Dict[str, str]]:
+        """
+        获取所有网卡的IP地址
+        
+        返回：
+            List[Dict[str, str]]: 包含网卡信息的列表，每个字典包含:
+                - name: 网卡名称
+                - ip: IP地址
+                - netmask: 子网掩码
+        """
+        logger.info("获取所有网卡IP地址")
+        network_ips = []
+        
+        # 首先尝试使用psutil（如果可用）
+        try:
+            import psutil
+            # 获取所有网卡信息
+            interfaces = psutil.net_if_addrs()
+            for interface_name, addrs in interfaces.items():
+                for addr in addrs:
+                    # 只获取IPv4地址
+                    if addr.family == socket.AF_INET:
+                        network_ips.append({
+                            'name': interface_name,
+                            'ip': addr.address,
+                            'netmask': addr.netmask
+                        })
+                        logger.info(f"找到网卡：{interface_name}, IP：{addr.address}, 掩码：{addr.netmask}")
+            if network_ips:
+                return network_ips
+        except ImportError:
+            logger.warning("psutil模块不可用，尝试使用socket方法")
+        except Exception as e:
+            logger.error(f"使用psutil获取网卡IP失败：{str(e)}")
+            
+        # 如果psutil不可用或失败，使用socket方法
+        try:
+            import socket
+            import subprocess
+            
+            # 在Windows上使用wmic命令
+            if os.name == 'nt':
+                try:
+                    # 使用wmic命令获取网卡信息
+                    output = subprocess.check_output('wmic nicconfig where IPEnabled=true get IPAddress,IPSubnet,Description /format:list', shell=True).decode('gbk')
+                    logger.debug(f"wmic原始输出：\n{output}")
+                    
+                    # 解析wmic输出
+                    current_desc = None
+                    current_ip = None
+                    current_mask = None
+                    
+                    for line in output.split('\n'):
+                        line = line.strip()
+                        if not line:  # 跳过空行
+                            # 如果收集到了完整的信息，保存它
+                            if current_desc and current_ip and current_mask:
+                                network_ips.append({
+                                    'name': current_desc,
+                                    'ip': current_ip,
+                                    'netmask': current_mask
+                                })
+                                logger.info(f"找到网卡：{current_desc}, IP：{current_ip}, 掩码：{current_mask}")
+                            current_desc = None
+                            current_ip = None
+                            current_mask = None
+                            continue
+                            
+                        if line.startswith('Description='):
+                            current_desc = line.split('=')[1].strip()
+                            logger.debug(f"找到网卡描述: {current_desc}")
+                        elif line.startswith('IPAddress='):
+                            # IPAddress通常是一个数组格式的字符串，如: {"192.168.1.1", "fe80::1"}
+                            try:
+                                # 提取IPv4地址
+                                ips = line.split('=')[1].strip('{}').split(',')
+                                for ip in ips:
+                                    ip = ip.strip().strip('"')
+                                    if '.' in ip:  # 这是IPv4地址
+                                        current_ip = ip
+                                        logger.debug(f"找到IP地址: {current_ip}")
+                                        break
+                            except:
+                                continue
+                        elif line.startswith('IPSubnet='):
+                            # IPSubnet也是一个数组格式
+                            try:
+                                masks = line.split('=')[1].strip('{}').split(',')
+                                for mask in masks:
+                                    mask = mask.strip().strip('"')
+                                    if '.' in mask:  # 这是IPv4掩码
+                                        current_mask = mask
+                                        logger.debug(f"找到子网掩码: {current_mask}")
+                                        break
+                            except:
+                                continue
+                                
+                    # 检查最后一个网卡的信息
+                    if current_desc and current_ip and current_mask:
+                        network_ips.append({
+                            'name': current_desc,
+                            'ip': current_ip,
+                            'netmask': current_mask
+                        })
+                        logger.info(f"找到网卡：{current_desc}, IP：{current_ip}, 掩码：{current_mask}")
+                            
+                except Exception as e:
+                    logger.error(f"执行wmic命令失败：{str(e)}")
+                    logger.debug("尝试使用socket方法作为备选")
+                    # 如果wmic失败，尝试使用socket方法
+                    try:
+                        # 创建一个UDP socket
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        # 尝试连接一个虚拟地址（不需要实际连接）
+                        sock.connect(("8.8.8.8", 80))
+                        ip = sock.getsockname()[0]
+                        sock.close()
+                        logger.debug(f"socket方法获取到IP: {ip}")
+                        
+                        # 使用默认子网掩码
+                        if ip.startswith('192.168.') or ip.startswith('10.'):
+                            mask = '255.255.255.0'  # Class C
+                        elif ip.startswith('172.'):
+                            mask = '255.255.0.0'    # Class B
+                        else:
+                            mask = '255.0.0.0'      # Class A
+                            
+                        network_ips.append({
+                            'name': 'Default Adapter',
+                            'ip': ip,
+                            'netmask': mask
+                        })
+                        logger.info(f"使用socket方法找到IP：{ip}, 掩码：{mask}")
+                    except Exception as socket_err:
+                        logger.error(f"socket方法也失败了：{str(socket_err)}")
+            
+            # 在Linux/Unix上使用ifconfig命令
+            else:
+                try:
+                    # 尝试使用ifconfig命令
+                    output = subprocess.check_output(['ifconfig']).decode()
+                    interfaces = output.split('\n\n')
+                    for interface in interfaces:
+                        if interface:
+                            lines = interface.split('\n')
+                            if lines:
+                                interface_name = lines[0].split()[0]
+                                for line in lines:
+                                    if 'inet ' in line:  # IPv4地址
+                                        parts = line.strip().split()
+                                        ip = None
+                                        mask = None
+                                        for i, part in enumerate(parts):
+                                            if part == 'inet':
+                                                ip = parts[i + 1].split('/')[0]
+                                            elif part == 'netmask':
+                                                mask = parts[i + 1]
+                                        if ip and mask:
+                                            network_ips.append({
+                                                'name': interface_name,
+                                                'ip': ip,
+                                                'netmask': mask
+                                            })
+                                            logger.info(f"找到网卡：{interface_name}, IP：{ip}, 掩码：{mask}")
+                except FileNotFoundError:
+                    logger.warning("ifconfig命令不可用，尝试使用ip命令")
+                    try:
+                        # 如果ifconfig不可用，尝试使用ip命令
+                        output = subprocess.check_output(['ip', 'addr']).decode()
+                        current_interface = None
+                        for line in output.split('\n'):
+                            if line.startswith(' '):
+                                if 'inet ' in line:  # IPv4地址
+                                    parts = line.strip().split()
+                                    ip = parts[1].split('/')[0]
+                                    # 将CIDR格式的掩码转换为点分十进制
+                                    cidr = int(parts[1].split('/')[1])
+                                    mask = '.'.join([str((0xffffffff << (32 - cidr) >> i) & 0xff)
+                                                   for i in [24, 16, 8, 0]])
+                                    if current_interface:
+                                        network_ips.append({
+                                            'name': current_interface,
+                                            'ip': ip,
+                                            'netmask': mask
+                                        })
+                                        logger.info(f"找到网卡：{current_interface}, IP：{ip}, 掩码：{mask}")
+                            else:
+                                # 新网卡接口
+                                if ':' in line:
+                                    current_interface = line.split(':')[1].strip()
+                    except Exception as e:
+                        logger.error(f"执行ip命令失败：{str(e)}")
+                        
+            # 过滤掉回环地址和无效地址
+            network_ips = [info for info in network_ips 
+                         if not info['ip'].startswith('127.') and  # 排除回环地址
+                            not info['ip'].startswith('169.254.')]  # 排除自动配置地址
+                            
+            if network_ips:
+                return network_ips
+                
+        except Exception as e:
+            logger.error(f"获取网卡IP地址失败：{str(e)}")
+            
+        # 如果所有方法都失败了，返回空列表
+        return []
             
     def telnet_check_device(self, ip: str) -> bool:
         """

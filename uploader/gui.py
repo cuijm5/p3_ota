@@ -331,6 +331,32 @@ class UploaderGUI:
         control_frame = tk.Frame(self.root)
         control_frame.pack(fill=tk.X, padx=10, pady=5)
         
+        # 添加IP选择框架
+        ip_frame = tk.Frame(control_frame)
+        ip_frame.pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(ip_frame, text="本机IP:").pack(side=tk.LEFT)
+        self.ip_var = tk.StringVar()
+        self.ip_combo = ttk.Combobox(ip_frame, 
+                                   textvariable=self.ip_var,
+                                   width=15,
+                                   state="readonly")
+        self.ip_combo.pack(side=tk.LEFT)
+        
+        # 获取并设置IP列表
+        self.update_ip_list()
+        
+        # 绑定IP选择事件
+        def on_ip_select(event):
+            selected_ip = self.ip_var.get()
+            if selected_ip:
+                # 从选择的字符串中提取IP地址
+                ip = selected_ip.split()[0]  # 格式: "192.168.1.1 (网卡名)"
+                logger.info(f"选择本机IP：{ip}")
+                self.status_var.set(f"已选择本机IP：{ip}")
+                
+        self.ip_combo.bind('<<ComboboxSelected>>', on_ip_select)
+
         # 添加子网掩码设置
         mask_frame = tk.Frame(control_frame)
         mask_frame.pack(side=tk.LEFT, padx=5)
@@ -426,6 +452,21 @@ class UploaderGUI:
             
         self.upgrade_monitor = UpgradeMonitor()
         
+    def update_ip_list(self):
+        """更新IP下拉列表"""
+        network_ips = self.device_manager.get_all_network_ips()
+        if network_ips:
+            # 格式化显示：IP (网卡名)
+            ip_list = [f"{info['ip']} ({info['name']})" for info in network_ips]
+            self.ip_combo['values'] = ip_list
+            # 默认选择第一个IP
+            self.ip_combo.set(ip_list[0])
+            logger.info(f"已更新IP列表：{ip_list}")
+        else:
+            self.ip_combo['values'] = ["无可用IP"]
+            self.ip_combo.set("无可用IP")
+            logger.warning("未找到可用的网卡IP")
+            
     def start_scan(self):
         """
         启动设备扫描线程
@@ -434,6 +475,15 @@ class UploaderGUI:
         if self.scanning_in_progress:
             messagebox.showwarning("警告", "当前正在进行扫描和升级流程，请等待所有设备升级监控结束后再进行扫描")
             return
+            
+        # 检查是否选择了有效的IP
+        selected_ip = self.ip_var.get()
+        if not selected_ip or selected_ip == "无可用IP":
+            messagebox.showwarning("警告", "请先选择有效的本机IP")
+            return
+            
+        # 从选择的字符串中提取IP地址
+        local_ip = selected_ip.split()[0]  # 格式: "192.168.1.1 (网卡名)"
             
         # 检查固件文件夹中是否存在.img文件
         firmware_dir = '../firmware'
@@ -452,7 +502,8 @@ class UploaderGUI:
         self.status_var.set("正在扫描设备...")
         try:
             self.scanning_in_progress = True  # 设置扫描流程开始
-            threading.Thread(target=self.scan_devices).start()
+            # 创建一个新线程并传入local_ip
+            threading.Thread(target=lambda: self.scan_devices(local_ip)).start()
             logger.info("设备扫描线程启动成功")
         except Exception as e:
             logger.error(f"设备扫描线程启动失败：{str(e)}")
@@ -503,7 +554,7 @@ class UploaderGUI:
                     device_info['upgrade_status']
                 ), tags=())  # 新设备不带颜色标签
 
-    def scan_devices(self):
+    def scan_devices(self, local_ip: str):
         """扫描并连接设备"""
         try:
             # 清空设备列表
@@ -512,19 +563,12 @@ class UploaderGUI:
                     self.device_tree.delete(item)
             logger.info("已清空设备列表")
             
-            # 获取本机IP
-            local_ip = self.device_manager.get_local_ip()
-            if not local_ip:
-                self.status_var.set("获取本机IP失败")
-                self.scanning_in_progress = False  # 重置扫描状态
-                return
-                
             # 扫描设备
             devices = []
             def progress_callback(completed, total):
                 self.update_scan_progress(completed, total)
                 
-            devices = self.device_manager.scan_network(progress_callback)
+            devices = self.device_manager.scan_network(progress_callback, local_ip)
             if not devices:
                 self.status_var.set("未发现设备")
                 self.scanning_in_progress = False  # 重置扫描状态
